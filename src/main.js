@@ -4,7 +4,7 @@
 
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
-import cheerio from 'cheerio';
+import { load as cheerioLoad } from 'cheerio';
 
 await Actor.init();
 
@@ -442,7 +442,7 @@ const crawler = new CheerioCrawler({
             let description_text = '';
             if (description_html) {
                 // Load cleaned HTML into cheerio to extract text and normalize whitespace
-                const $$ = cheerio.load(description_html);
+                const $$ = cheerioLoad(description_html);
                 description_text = $$.root().text().replace(/\s+/g, ' ').trim();
             } else {
                 description_text = cleanTextFromEl(container) || '';
