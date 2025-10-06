@@ -680,67 +680,58 @@ const crawler = new CheerioCrawler({
             }
 
             // Date posted: Look for time elements or standalone date patterns
-            let date_posted = '';
-            
-            // Try specific selectors first
-            const dateSelectors = ['time', '[data-testid*="posted"]', '[class*="posted"]'];
-            for (const sel of dateSelectors) {
-                const el = $(sel).first();
-                if (el.length) {
-                    const datetime = el.attr('datetime');
-                    if (datetime) {
-                        date_posted = datetime;
-                        break;
-                    }
-                    const text = cleanTextFromEl(el);
-                    if (text) {
-                        date_posted = text;
-                        break;
+            // The `date_posted` variable is already declared from the JSON-LD section.
+            // We only run these fallbacks if it wasn't found there.
+            if (!date_posted) {
+                // Try specific selectors first
+                const dateSelectors = ['time', '[data-testid*="posted"]', '[class*="posted"]'];
+                for (const sel of dateSelectors) {
+                    const el = $(sel).first();
+                    if (el.length) {
+                        const datetime = el.attr('datetime');
+                        if (datetime) {
+                            date_posted = datetime;
+                            break;
+                        }
+                        const text = cleanTextFromEl(el);
+                        if (text) {
+                            date_posted = text;
+                            break;
+                        }
                     }
                 }
-            }
 
-            if (!date_posted) { // Only run if not found in JSON-LD
-                $('span, div').each((_, el) => {
-                    const text = cleanTextFromEl($(el));
-                    if (text.toLowerCase().includes('posted') && text.length < 40) {
-                        const dateMatch = text.match(/(posted\s+.*ago|posted\s+on\s+.*)/i);
-                        if (dateMatch && dateMatch[0]) date_posted = dateMatch[0];
-                        return false; // break
-                    }
-                });
+                // Final fallback: search for text patterns if selectors fail
+                if (!date_posted) {
+                    $('span, div, p').each((_, el) => {
+                        const text = cleanTextFromEl($(el));
+                        // Look for "posted..." or common relative date patterns like "3 days ago"
+                        const dateMatch = text.match(/(posted\s+.*ago|posted\s+on\s+.*|\d+\s+(day|week|month)s?\s+ago)/i);
+                        if (dateMatch && dateMatch[0] && text.length < 40) {
+                            date_posted = dateMatch[0];
+                            return false; // break loop
+                        }
+                    });
+                }
             }
 
             const container = findBestDescriptionContainer($);
             let description_html = '';
             let description_text = '';
-            
+
             if (container && container.length) {
+                // Always generate HTML first from the best container
                 description_html = sanitizeDescription($, container, request.url);
+
+                // Then, reliably generate the text version from the sanitized HTML
                 if (description_html) {
-                    // Load cleaned HTML into cheerio to extract text and normalize whitespace
-                    const $$ = cheerioLoad(description_html);
-                    description_text = $$.root().text().replace(/\s+/g, ' ').trim();
+                    description_text = cheerioLoad(description_html).text().replace(/\s+/g, ' ').trim();
                 } else {
-                    // Fallback to plain text extraction
+                    // If HTML sanitization fails (rare), fall back to direct text extraction
                     description_text = cleanTextFromEl(container);
                 }
-            }
-            
-            // If still no description, try broader containers
-            if (!description_html && !description_text) {
-                const broad = $('main, article, body').first();
-                if (broad.length) {
-                    description_text = cleanTextFromEl(broad);
-                    // Try to extract a reasonable subset for HTML
-                    const paras = broad.find('p, div').filter((_, el) => {
-                        const text = $(el).text().trim();
-                        return text.length > 50 && text.length < 2000;
-                    }).slice(0, 5);
-                    if (paras.length) {
-                        description_html = sanitizeDescription($, paras.first().parent(), request.url);
-                    }
-                }
+            } else {
+                crawlerLog.warn(`Could not find a suitable description container for ${request.url}`);
             }
             
             // Log extraction results for debugging
