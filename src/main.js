@@ -63,7 +63,8 @@ const collectJobLinks = ($, baseUrl) => {
     anchorCandidates.push(...$('a[href]')); // start with all anchors and filter below
 
     // Filter anchors that look like job detail pages
-    const jobHrefRx = /\/job(\/|[-_a-zA-Z0-9?=&%]+)|\/(?:en\/)?job[s]?[-_a-zA-Z0-9]*/i;
+    // Workopolis uses paths like /jobsearch/viewjob/<id> as well as /job/... in some templates
+    const jobHrefRx = /\/jobsearch\/viewjob\/(?:[-_a-zA-Z0-9%_]+)|\/job(\/|[-_a-zA-Z0-9?=&%]+)|\/(?:en\/)?job[s]?[-_a-zA-Z0-9]*/i;
 
     anchorCandidates.forEach((i, a) => {
         try {
@@ -73,14 +74,14 @@ const collectJobLinks = ($, baseUrl) => {
             if (/^#|^javascript:/i.test(href)) return;
 
             // If href contains 'job' token it's likely a detail link
-            if (jobHrefRx.test(href) || /job[-_]?id=|jobId=|/i.test(href)) {
+            if (jobHrefRx.test(href) || /job[-_]?id=|jobId=/i.test(href)) {
                 const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
                 if (abs) links.add(abs);
                 return;
             }
 
             // Heuristic: anchors inside listing items
-            const parent = $(a).closest('li, article, .result, .job, .search-result, .job-listing');
+            const parent = $(a).closest('li, article, .result, .job, .search-result, .job-listing, .job-card, .searchCard');
             if (parent && parent.length) {
                 const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
                 if (abs && abs.includes('workopolis.com')) links.add(abs);
@@ -89,6 +90,18 @@ const collectJobLinks = ($, baseUrl) => {
             // ignore
         }
     });
+
+    // Fallback: if no links detected, try anchors containing known jobsearch path
+    if (!links.size) {
+        $('a[href]').each((_, a) => {
+            const href = String($(a).attr('href') || '').trim();
+            if (!href) return;
+            if (href.includes('/jobsearch/viewjob')) {
+                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
+                if (abs) links.add(abs);
+            }
+        });
+    }
 
     // Return unique links with some ordering
     return [...links].filter(Boolean);
@@ -287,6 +300,12 @@ const crawler = new CheerioCrawler({
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($, request.url);
             crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
+            if (links.length) {
+                const sample = links.slice(0, 6).join('\n - ');
+                crawlerLog.debug(`Sample links:\n - ${sample}`);
+            } else {
+                crawlerLog.debug('No candidate links found on this list page (links.length === 0)');
+            }
 
             if (!collectDetails) {
                 // Direct push mode - stop as soon as we reach the limit
