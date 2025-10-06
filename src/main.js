@@ -537,6 +537,7 @@ const crawler = new CheerioCrawler({
             // Company and Location: Look for the pattern "Company —Location" which is common on Workopolis
             let company = '';
             let location = '';
+            let date_posted = '';
             
             // --- STRATEGY 0: JSON-LD (Structured Data) ---
             // This is the most reliable method if available.
@@ -680,8 +681,6 @@ const crawler = new CheerioCrawler({
             }
 
             // Date posted: Look for time elements or standalone date patterns
-            // The `date_posted` variable is already declared from the JSON-LD section.
-            // We only run these fallbacks if it wasn't found there.
             if (!date_posted) {
                 // Try specific selectors first
                 const dateSelectors = ['time', '[data-testid*="posted"]', '[class*="posted"]'];
