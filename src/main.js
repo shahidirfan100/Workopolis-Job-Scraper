@@ -154,79 +154,93 @@ const findNextUrl = ($, currentUrl) => {
 };
 
 const findBestDescriptionContainer = ($) => {
-    // Try specific Workopolis selectors first
-    const orderedSelectors = [
-        '[data-testid*="description"]',
+    // Remove skip links and navigation first
+    $('a[href*="#main-content"], .skip-link, nav, header, footer').remove();
+    
+    // Try specific job description selectors first
+    const specificSelectors = [
+        '[data-testid="job-description"]',
         '.job-description',
-        '.viewjob-description', 
+        '.viewjob-description',
         '[data-qa="job-description"]',
         '.full-job-description',
-        'section:contains("Full job description")',
-        'div:contains("Job details")',
+        '.description',
     ];
-    
-    for (const sel of orderedSelectors) {
+
+    for (const sel of specificSelectors) {
         const el = $(sel).first();
-        if (el && el.length && el.text().trim().length > 100) return el;
+        if (el && el.length) {
+            const text = el.text().trim();
+            if (text.length > 100 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
+                return el;
+            }
+        }
     }
 
-    // Look for the main content area that contains job details
+    // Fallback: find the largest text block that looks like job content
     let best = null;
     let bestScore = 0;
+    
+    // Exclude common non-content patterns
+    const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
+    
+    $('div, section, article, p').each((_, el) => {
+        const $el = $(el);
+        const text = $el.text().trim();
+        const len = text.length;
 
-    // Exclude navigation, sidebar, and footer content
-    const badRx = /Similar Jobs|Recommended|Create alerts|Browse jobs|Stay Connected|Job seeker tools|Employer Tools|Privacy|Terms|Cookies|All jobs|All salaries|Contact Us|Quick apply|Back to search/i;
-    
-    // Search in likely containers
-    const containers = $('main, article, .content, [role="main"], body > div').toArray();
-    
-    for (const container of containers) {
-        const $container = $(container);
+        // Skip short content, navigation, or excluded patterns
+        if (len < 200 || excludePatterns.test(text)) return;
+
+        // Skip if it's mostly navigation links
+        const linkRatio = $el.find('a').length / Math.max(1, text.split(' ').length / 10);
+        if (linkRatio > 0.3) return;
+
+        // Skip if it contains mostly dates/years (likely metadata)
+        const dateMatches = text.match(/\b20\d{2}\b/g);
+        if (dateMatches && dateMatches.length > 3) return;
         
-        // Look for sections/divs with substantial content
-        $container.find('section, div, article').each((_, el) => {
-            const $el = $(el);
-            const txt = $el.text().trim();
-            const len = txt.length;
-            
-            // Skip if too short or contains excluded content
-            if (len < 150 || badRx.test(txt)) return;
-            
-            // Skip if it's likely navigation or metadata
-            if ($el.find('nav, .nav, header, footer').length > 0) return;
-            
-            // Give bonus points for job-related content indicators
-            let score = len;
-            if (txt.includes('responsibilities') || txt.includes('requirements') || txt.includes('qualifications')) score += 200;
-            if ($el.find('ul li, ol li').length > 2) score += 100; // bullet points
-            if ($el.find('p').length > 2) score += 50; // paragraphs
-            if (txt.includes('salary') || txt.includes('benefits') || txt.includes('experience')) score += 50;
-            
-            if (score > bestScore) {
-                bestScore = score;
-                best = $el;
-            }
-        });
-    }
+        // Calculate score based on job-relevant content
+        let score = len;
+        
+        // Bonus for job-related terms (lowercase)
+        const jobTerms = [
+            'responsibilities', 'requirements', 'qualifications', 'experience',
+            'skills', 'duties', 'role', 'position', 'candidate', 'applicant',
+            'salary', 'benefits', 'team', 'company', 'work', 'job'
+        ];
 
-    return best || $('main, article').first() || $('body');
+        const lowerText = text.toLowerCase();
+        jobTerms.forEach(term => {
+            if (lowerText.includes(term)) score += 50;
+        });
+
+        // Bonus for structured content
+        if ($el.find('ul li').length > 1) score += 100;
+        if ($el.find('p').length > 2) score += 50;
+        if ($el.find('h2, h3, h4').length > 0) score += 25;
+
+        // Penalty for repetitive content
+        const words = text.split(' ');
+        const uniqueWords = new Set(words);
+        if (uniqueWords.size < words.length * 0.3) score -= 100;
+        
+        if (score > bestScore) {
+            bestScore = score;
+            best = $el;
+        }
+    });
+
+    return best || $('main').first() || $('body');
 };
 
 // Helper to clean text from a Cheerio element: remove icons/images/buttons before reading text
 const cleanTextFromEl = ($el) => {
     if (!$el || !$el.length) return '';
     const clone = $el.clone();
-    
+
     // Remove noisy inner elements that pollute text
-    clone.find('svg, img, button, script, style, noscript').remove();
-    clone.find('.icon, .rating, .visually-hidden, .sr-only').remove();
-    clone.find('[aria-hidden="true"]').remove();
-    
-    // Remove links but keep their text content
-    clone.find('a').each((_, link) => {
-        const $link = $(link);
-        $link.replaceWith($link.text());
-    });
+    clone.find('svg, img, button, script, style, noscript, .icon, .rating, .visually-hidden, .sr-only, [aria-hidden="true"]').remove();
     
     let txt = clone.text() || '';
     
@@ -247,17 +261,36 @@ const cleanTextFromEl = ($el) => {
 const sanitizeDescription = ($, el, baseUrl) => {
     if (!el || !el.length) return '';
     const clone = el.clone();
-    // remove disallowed tags entirely
+    
+    // Remove unwanted elements entirely
     clone.find('script, style, nav, header, footer, button, svg, form, aside, noscript').remove();
-    // Remove inline event handlers and dangerous attributes; keep only href on anchors
+    clone.find('.skip-link, [href*="#main-content"]').remove();
+    clone.find('.navigation, .nav, .menu, .breadcrumb').remove();
+    
+    // Remove elements with navigation-like text
+    clone.find('*').each((_, node) => {
+        const $node = $(node);
+        const text = $node.text().trim();
+        if (text.match(/^(Skip to|Back to|Quick apply|Apply now|Sign in|Create alert)$/i)) {
+            $node.remove();
+        }
+    });
+    
+    // Clean up attributes on remaining elements
     clone.find('*').each((_, node) => {
         const tag = node.tagName ? node.tagName.toLowerCase() : (node.name || '');
         const attribs = Object.keys(node.attribs || {});
-        for (const a of attribs) {
-            // preserve href on anchors (but sanitize)
-            if (tag === 'a' && a === 'href') {
+        
+        for (const attr of attribs) {
+            // Keep href on anchors but sanitize them
+            if (tag === 'a' && attr === 'href') {
                 const hrefVal = $(node).attr('href');
                 try {
+                    // Skip internal navigation links
+                    if (hrefVal && hrefVal.includes('#main-content')) {
+                        $(node).remove();
+                        return;
+                    }
                     const abs = new URL(hrefVal, baseUrl || 'https://www.workopolis.com').href;
                     $(node).attr('href', abs);
                 } catch {
@@ -265,19 +298,41 @@ const sanitizeDescription = ($, el, baseUrl) => {
                 }
                 continue;
             }
-            // remove all other attributes
-            $(node).removeAttr(a);
+            
+            // Keep essential structure attributes for lists and headings
+            if ((tag === 'ul' || tag === 'ol') && attr === 'type') continue;
+            if ((tag.match(/^h[1-6]$/)) && attr === 'id') continue;
+            
+            // Remove all other attributes
+            $(node).removeAttr(attr);
         }
     });
 
-    // Remove empty elements and comments
-    clone.find('*').each((_, n) => {
-        const $n = $(n);
-        if (!$n.text().trim() && !$n.children().length) $n.remove();
-    });
+    // Remove empty elements recursively
+    let removedSomething = true;
+    while (removedSomething) {
+        removedSomething = false;
+        clone.find('*').each((_, n) => {
+            const $n = $(n);
+            const text = $n.text().trim();
+            const hasContent = text.length > 0;
+            const hasStructuralChildren = $n.children('p, div, ul, ol, h1, h2, h3, h4, h5, h6, li').length > 0;
+            
+            if (!hasContent && !hasStructuralChildren) {
+                $n.remove();
+                removedSomething = true;
+            }
+        });
+    }
 
-    // Return cleaned HTML
-    return clone.html() ? String(clone.html()).trim() : '';
+    // Get the cleaned HTML
+    let html = clone.html() ? String(clone.html()).trim() : '';
+    
+    // Final cleanup of the HTML string
+    html = html.replace(/<>\s*<\/>/g, ''); // Remove empty tags
+    html = html.replace(/\s+/g, ' '); // Normalize whitespace
+    
+    return html;
 };
 
 const htmlToText = (html) => (html || '')
@@ -454,90 +509,138 @@ const crawler = new CheerioCrawler({
                 return;
             }
 
-            // Extract job data using broader selectors based on actual Workopolis structure
-            // Title: look for h1, h2, or heading elements
+            // Extract job data using patterns specific to Workopolis structure
+            
+            // Title: Look for the main job title (usually the first h1 or prominent heading)
             let title = '';
-            const titleCandidates = ['h1', 'h2', '[data-testid*="title"]', '.job-title', '.jobTitle'];
-            for (const sel of titleCandidates) {
-                const el = $(sel).first();
-                if (el.length) {
-                    title = cleanTextFromEl(el);
-                    if (title && title.length > 5) break; // reasonable title length
+            // Try h1 first (most common for job titles)
+            const h1 = $('h1').first();
+            if (h1.length) {
+                title = cleanTextFromEl(h1);
+            }
+            
+            // If h1 is empty or too short, try other heading elements
+            if (!title || title.length < 3) {
+                const headingCandidates = ['h2', 'h3', '.job-title', '.jobTitle', '[data-qa*="title"]'];
+                for (const sel of headingCandidates) {
+                    const el = $(sel).first();
+                    if (el.length) {
+                        const candidateTitle = cleanTextFromEl(el);
+                        if (candidateTitle && candidateTitle.length > 3 && candidateTitle.length < 200) {
+                            title = candidateTitle;
+                            break;
+                        }
+                    }
                 }
             }
 
-            // Company: look in various locations where company name appears
+            // Company and Location: Look for the pattern "Company —Location" which is common on Workopolis
             let company = '';
-            const companyCandidates = [
-                'a[href*="/company/"]', 
-                '[data-testid*="company"]',
-                '.company-name', 
-                '.employer', 
-                'h2:contains("—")', // pattern like "Carter's —Brantford, ON"
-                '.job-company'
-            ];
-            for (const sel of companyCandidates) {
+            let location = '';
+            
+            // Strategy 1: Look for a specific header container
+            const headerEl = $('[data-testid="job-header"]').first();
+            if (headerEl.length) {
+                const headerText = cleanTextFromEl(headerEl);
+                // Common pattern: "Company Name • Location"
+                if (headerText.includes('•')) {
+                    const parts = headerText.split('•').map(p => p.trim());
+                    if (parts.length >= 2) {
+                        company = parts[0];
+                        location = parts[1];
+                    }
+                }
+            }
+
+            // Strategy 2: Look for "Company — Location" pattern if Strategy 1 fails
+            if (!company || !location) {
+                const companyLocationElements = [
+                    ...($('h2, h3, .company, [class*="company"]').toArray()),
+                    ...($('div').filter((_, el) => $(el).text().includes('—')).toArray())
+                ];
+                for (const el of companyLocationElements) {
+                    const text = cleanTextFromEl($(el));
+                    if (text.includes('—')) {
+                        const parts = text.split('—').map(p => p.trim());
+                        if (parts.length >= 2 && parts[0].length > 1 && parts[1].length > 1) {
+                            if (!company) company = parts[0];
+                            if (!location) location = parts[1];
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Fallback for company if not found in "Company —Location" pattern
+            if (!company) {
+                const companySelectors = [
+                    'a[href*="/company/"]',
+                    '.company-name',
+                    '.employer',
+                    '[data-qa*="company"]',
+                    '[class*="employer"]'
+                ];
+                
+                for (const sel of companySelectors) {
+                    const el = $(sel).first();
+                    if (el.length) {
+                        const candidateCompany = cleanTextFromEl(el);
+                        if (candidateCompany && candidateCompany.length > 1 && candidateCompany.length < 100) {
+                            company = candidateCompany;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Fallback for location if not found
+            if (!location) {
+                const locationSelectors = [
+                    '.location',
+                    '.job-location',
+                    '[data-qa*="location"]',
+                    '[class*="location"]'
+                ];
+                
+                for (const sel of locationSelectors) {
+                    const el = $(sel).first();
+                    if (el.length) {
+                        const candidateLocation = cleanTextFromEl(el);
+                        if (candidateLocation && candidateLocation.length > 1 && candidateLocation.length < 100) {
+                            location = candidateLocation;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Date posted: Look for time elements or standalone date patterns
+            let date_posted = '';
+            
+            // Try specific selectors first
+            const dateSelectors = ['time', '[data-testid*="posted"]', '[class*="posted"]'];
+            for (const sel of dateSelectors) {
                 const el = $(sel).first();
                 if (el.length) {
-                    let text = cleanTextFromEl(el);
-                    // Clean up company text (remove location part if present)
-                    if (text.includes('—')) {
-                        text = text.split('—')[0].trim();
+                    const datetime = el.attr('datetime');
+                    if (datetime) {
+                        date_posted = datetime;
+                        break;
                     }
-                    if (text && text.length > 1) {
-                        company = text;
+                    const text = cleanTextFromEl(el);
+                    if (text) {
+                        date_posted = text;
                         break;
                     }
                 }
             }
 
-            // Location: extract from various patterns
-            let location = '';
-            const locationCandidates = [
-                '[data-testid*="location"]',
-                '.job-location',
-                '.location'
-            ];
-            
-            // Try specific selectors first
-            for (const sel of locationCandidates) {
-                const el = $(sel).first();
-                if (el.length) {
-                    location = cleanTextFromEl(el);
-                    if (location && location.length > 1) break;
-                }
-            }
-            
-            // Fallback: extract location from company line if pattern like "Company —Location"
-            if (!location && company) {
-                $('h2, h3, div').each((_, el) => {
-                    const text = $(el).text();
-                    if (text.includes('—') && text.includes(company)) {
-                        const parts = text.split('—');
-                        if (parts.length > 1) {
-                            location = parts[1].trim();
-                            return false; // break
-                        }
-                    }
-                });
-            }
-
-            // Date posted: look for time elements or text patterns
-            let date_posted = '';
-            // Try time element with datetime attribute first
-            const timeEl = $('time[datetime]').first();
-            if (timeEl.length) {
-                date_posted = timeEl.attr('datetime') || cleanTextFromEl(timeEl);
-            }
-            
-            // Fallback: look for patterns like "7d", "2d", "12d" in text
             if (!date_posted) {
-                $('*').each((_, el) => {
-                    const text = $(el).text().trim();
-                    // Match patterns like "7d", "2d", "12d", "1w", etc.
-                    const match = text.match(/\b(\d+[dwmy]|today|yesterday)\b/i);
-                    if (match && text.length < 20) { // avoid grabbing long text
-                        date_posted = match[1];
+                $('span, div').each((_, el) => {
+                    const text = cleanTextFromEl($(el));
+                    const dateMatch = text.match(/posted|(\d+\s+(day|week|month)s?\s+ago)/i);
+                    if (dateMatch && text.length < 30) {
+                        date_posted = dateMatch[1];
                         return false; // break
                     }
                 });
@@ -576,8 +679,18 @@ const crawler = new CheerioCrawler({
             }
             
             // Log extraction results for debugging
-            crawlerLog.debug(`Extracted - Title: ${title ? 'OK' : 'MISSING'}, Company: ${company ? 'OK' : 'MISSING'}, Location: ${location ? 'OK' : 'MISSING'}, Date: ${date_posted ? 'OK' : 'MISSING'}, Desc: ${description_text ? description_text.substring(0, 100) + '...' : 'MISSING'}`);
-            
+            crawlerLog.info(`Extracted from ${request.url}:`);
+            crawlerLog.info(`  Title: ${title || 'MISSING'}`);
+            crawlerLog.info(`  Company: ${company || 'MISSING'}`);
+            crawlerLog.info(`  Location: ${location || 'MISSING'}`);
+            crawlerLog.info(`  Date: ${date_posted || 'MISSING'}`);
+            crawlerLog.info(`  Description length: ${description_text ? description_text.length : 0} chars`);
+            if (description_text && description_text.length > 0) {
+                crawlerLog.debug(`  Description preview: ${description_text.substring(0, 200)}...`);
+            }
+            if (description_html && description_html.length > 0) {
+                crawlerLog.debug(`  HTML length: ${description_html.length} chars`);
+            }
 
             const item = {
                 url: request.url,
