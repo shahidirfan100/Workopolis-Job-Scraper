@@ -4,6 +4,7 @@
 
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
+import cheerio from 'cheerio';
 
 await Actor.init();
 
@@ -188,22 +189,51 @@ const findBestDescriptionContainer = ($) => {
     return best || scope;
 };
 
-// Sanitize job description HTML: remove ALL hyperlinks and unwanted tags
-const sanitizeHtmlString = (rawHtml) => {
-    if (!rawHtml) return '';
-    let html = rawHtml
-        .replace(/<\s*(script|style|nav|header|footer|button|svg|img|form|aside)[\s\S]*?<\/\s*\1\s*>/gi, '');
+// Helper to clean text from a Cheerio element: remove icons/images/buttons before reading text
+const cleanTextFromEl = ($el) => {
+    if (!$el || !$el.length) return '';
+    const clone = $el.clone();
+    // remove noisy inner elements that pollute text
+    clone.find('svg, img, button, a, .icon, .rating, .visually-hidden').remove();
+    const txt = clone.text() || '';
+    return String(txt).replace(/\s+/g, ' ').trim();
+};
 
-    // Remove ALL hyperlinks completely (anchor + inner text)
-    html = html.replace(/<a[^>]*>.*?<\/a>/gi, '');
+// Sanitize job description using the existing Cheerio instance to preserve structure and links
+const sanitizeDescription = ($, el, baseUrl) => {
+    if (!el || !el.length) return '';
+    const clone = el.clone();
+    // remove disallowed tags entirely
+    clone.find('script, style, nav, header, footer, button, svg, form, aside, noscript').remove();
+    // Remove inline event handlers and dangerous attributes; keep only href on anchors
+    clone.find('*').each((_, node) => {
+        const tag = node.tagName ? node.tagName.toLowerCase() : (node.name || '');
+        const attribs = Object.keys(node.attribs || {});
+        for (const a of attribs) {
+            // preserve href on anchors (but sanitize)
+            if (tag === 'a' && a === 'href') {
+                const hrefVal = $(node).attr('href');
+                try {
+                    const abs = new URL(hrefVal, baseUrl || 'https://www.workopolis.com').href;
+                    $(node).attr('href', abs);
+                } catch {
+                    $(node).removeAttr('href');
+                }
+                continue;
+            }
+            // remove all other attributes
+            $(node).removeAttr(a);
+        }
+    });
 
-    // Strip attributes from allowed tags
-    html = html.replace(/<\s*(p|ul|ol|li|strong|em|h1|h2|h3)\b[^>]*>/gi, '<$1>');
+    // Remove empty elements and comments
+    clone.find('*').each((_, n) => {
+        const $n = $(n);
+        if (!$n.text().trim() && !$n.children().length) $n.remove();
+    });
 
-    // Unwrap disallowed tags
-    html = html.replace(/<\/?(?!p|br|ul|ol|li|strong|em|h1|h2|h3)\w+[^>]*>/gi, '');
-
-    return html.trim();
+    // Return cleaned HTML
+    return clone.html() ? String(clone.html()).trim() : '';
 };
 
 const htmlToText = (html) => (html || '')
@@ -381,54 +411,51 @@ const crawler = new CheerioCrawler({
             }
 
             // Robust title/company/location/date extraction with fallbacks for different Workopolis templates
-            const title = (
-                $('h1.job-title').first().text() ||
-                $('h1').first().text() ||
-                $('[data-qa="job-title"]').text() ||
-                $('[itemprop="title"]').text() ||
-                ''
-            ).trim();
+            // Use cleaned text extraction to avoid embedded tags and icons
+            const titleEl = $('h1.job-title').first().length ? $('h1.job-title').first() : $('h1').first();
+            const title = cleanTextFromEl(titleEl) || cleanTextFromEl($('[data-qa="job-title"]').first()) || cleanTextFromEl($('[itemprop="title"]').first());
 
-            const company = (
-                $('[data-cy="company-name"]').text() ||
-                $('.company, .job-company, .employer, [data-qa="company"]').first().text() ||
-                $('.company-name').first().text() ||
-                ''
-            ).trim();
+            const companyEl = $('[data-cy="company-name"]').first().length ? $('[data-cy="company-name"]').first() : ($('.company, .job-company, .employer, [data-qa="company"]').first());
+            const company = cleanTextFromEl(companyEl) || cleanTextFromEl($('.company-name').first());
 
-            const location = (
-                $('[data-cy="location"]').text() ||
-                $('.location, .job-location, [data-qa="location"]').first().text() ||
-                $('meta[property="jobLocation"]')?.attr('content') ||
-                ''
-            ).trim();
+            const locationEl = $('[data-cy="location"]').first().length ? $('[data-cy="location"]').first() : ($('.location, .job-location, [data-qa="location"]').first());
+            const location = cleanTextFromEl(locationEl) || $('meta[property="jobLocation"]').attr('content') || '';
 
-            // Date posted: check time tags, meta tags, or text labels
+            // Date posted: check time tags, meta tags, or text labels and clean it
             let date_posted = '';
-            date_posted = date_posted || $('time[datetime]').first().attr('datetime') || '';
+            const timeEl = $('time[datetime]').first();
+            date_posted = timeEl && timeEl.attr('datetime') ? timeEl.attr('datetime') : date_posted;
             date_posted = date_posted || $('meta[name="datePosted"]').attr('content') || '';
             if (!date_posted) {
-                const postedText = $('*').filter((i, el) => /posted|date posted|posted on/i.test($(el).text())).first().text();
-                date_posted = postedText ? postedText.trim().replace(/\s+/g, ' ') : '';
+                const postedTextEl = $('*').filter((i, el) => /posted|date posted|posted on|ago$/i.test($(el).text())).first();
+                date_posted = cleanTextFromEl(postedTextEl) || '';
             }
 
-            const container = findBestDescriptionContainer($);
-            let description_html = sanitizeHtmlString(container?.html?.() || '');
+            const container = findBestDescriptionContainer($) || $('article, main').first();
+            let description_html = sanitizeDescription($, container, request.url);
             if (!description_html) {
-                const broad = $('article, main').first().html() || $('body').html() || '';
-                description_html = sanitizeHtmlString(broad);
+                const broad = $('article, main').first();
+                description_html = sanitizeDescription($, broad, request.url);
             }
 
-            const description_text = htmlToText(description_html);
+            // Create plain text description from cleaned HTML
+            let description_text = '';
+            if (description_html) {
+                // Load cleaned HTML into cheerio to extract text and normalize whitespace
+                const $$ = cheerio.load(description_html);
+                description_text = $$.root().text().replace(/\s+/g, ' ').trim();
+            } else {
+                description_text = cleanTextFromEl(container) || '';
+            }
 
             const item = {
                 url: request.url,
-                title: title || null,
-                company: company || null,
-                location: location || null,
-                date_posted: date_posted || null,
-                description_html: description_html || null,
-                description_text: description_text || null,
+                title: title && title.length ? title : null,
+                company: company && company.length ? company : null,
+                location: location && location.length ? location : null,
+                date_posted: date_posted && date_posted.length ? date_posted : null,
+                description_html: description_html && description_html.length ? description_html : null,
+                description_text: description_text && description_text.length ? description_text : null,
                 _source: 'workopolis.com',
                 _fetchedAt: new Date().toISOString(),
                 _from: 'detail',
