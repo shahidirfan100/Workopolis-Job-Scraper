@@ -39,12 +39,13 @@ const USER_AGENTS = [
 ];
 
 const buildStartUrl = (kw, loc, date) => {
-    const url = new URL('https://www.workopolis.com/jobsearch/find-jobs');
-    if (kw) url.searchParams.set('q', kw);
-    if (loc) url.searchParams.set('l', loc);
-    if (date && date !== 'anytime') {
-        url.searchParams.set('posted', date);
-    }
+    // Workopolis uses a few different search endpoints; prefer /search which is stable.
+    // If keyword is empty, use 'browse' to show general listings similar to the UI example.
+    const url = new URL('https://www.workopolis.com/search');
+    url.searchParams.set('q', kw && String(kw).trim() ? String(kw).trim() : 'browse');
+    if (loc && String(loc).trim()) url.searchParams.set('l', String(loc).trim());
+    // Keep posted_date if provided and not 'anytime' - may be ignored by the site but safe to include
+    if (date && date !== 'anytime') url.searchParams.set('posted', String(date));
     return url.href;
 };
 
@@ -52,33 +53,90 @@ const toAbs = (href) => {
     try { return new URL(href, 'https://www.workopolis.com').href; } catch { return null; }
 };
 
-const collectJobLinks = ($) => {
+const collectJobLinks = ($, baseUrl) => {
+    // Broad heuristics to capture job detail links on Workopolis search pages.
     const links = new Set();
-    $('article.job-card a').each((_, a) => {
-        const href = String($(a).attr('href') || '');
-        if (/^\/job\//.test(href)) links.add(toAbs(href));
+
+    const anchorCandidates = [];
+
+    // Common containers
+    anchorCandidates.push(...$('a[href]')); // start with all anchors and filter below
+
+    // Filter anchors that look like job detail pages
+    const jobHrefRx = /\/job(\/|[-_a-zA-Z0-9?=&%]+)|\/(?:en\/)?job[s]?[-_a-zA-Z0-9]*/i;
+
+    anchorCandidates.forEach((i, a) => {
+        try {
+            const href = String($(a).attr('href') || '').trim();
+            if (!href) return;
+            // ignore anchors that are page anchors or javascript
+            if (/^#|^javascript:/i.test(href)) return;
+
+            // If href contains 'job' token it's likely a detail link
+            if (jobHrefRx.test(href) || /job[-_]?id=|jobId=|/i.test(href)) {
+                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
+                if (abs) links.add(abs);
+                return;
+            }
+
+            // Heuristic: anchors inside listing items
+            const parent = $(a).closest('li, article, .result, .job, .search-result, .job-listing');
+            if (parent && parent.length) {
+                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
+                if (abs && abs.includes('workopolis.com')) links.add(abs);
+            }
+        } catch (e) {
+            // ignore
+        }
     });
-    return [...links];
+
+    // Return unique links with some ordering
+    return [...links].filter(Boolean);
 };
 
 const findNextUrl = ($, currentUrl) => {
-    const nextHref = $('a[rel="next"]').attr('href');
-    if (nextHref) return toAbs(nextHref);
+    // Try common next-link patterns first
+    const relNext = $('a[rel="next"]').attr('href');
+    if (relNext) return toAbs(relNext) || null;
 
-    const nextLink = $('a:contains("Next")');
-    if (nextLink.length) {
-        const nextUrl = nextLink.attr('href');
-        if(nextUrl) return toAbs(nextUrl);
+    const ariaNext = $('a[aria-label*="next" i], button[aria-label*="next" i]').first().attr('href');
+    if (ariaNext) return toAbs(ariaNext) || null;
+
+    // Pagination next button (case-insensitive text match)
+    const nextByText = $('a, button').filter((_, el) => /next|›|»/i.test($(el).text())).first().attr('href');
+    if (nextByText) return toAbs(nextByText) || null;
+
+    // Try to find active page and take its next sibling's href
+    const active = $('.pagination .active, .pagination li.active, .pagination li.current').first();
+    if (active && active.length) {
+        const next = active.next('li').find('a').attr('href');
+        if (next) return toAbs(next) || null;
     }
 
+    // Fallback: increment common page query params (page, p, pg)
     try {
         const u = new URL(currentUrl);
-        const current = Number(u.searchParams.get('page') || '1');
-        u.searchParams.set('page', String(current + 1));
-        return u.href;
-    } catch {
-        return null;
+        const pageParamCandidates = ['page', 'p', 'pg', 'pageNumber', 'start'];
+        for (const p of pageParamCandidates) {
+            if (u.searchParams.has(p)) {
+                const cur = Number(u.searchParams.get(p) || '1');
+                if (!Number.isNaN(cur)) {
+                    u.searchParams.set(p, String(cur + 1));
+                    return u.href;
+                }
+            }
+        }
+
+        // If no page param, try adding 'page=2' when the url has a search path
+        if (![...u.searchParams.keys()].length) {
+            u.searchParams.set('page', '2');
+            return u.href;
+        }
+    } catch (e) {
+        // ignore
     }
+
+    return null;
 };
 
 const findBestDescriptionContainer = ($) => {
@@ -227,7 +285,7 @@ const crawler = new CheerioCrawler({
         const { label, pageNo = 1 } = request.userData ?? {};
 
         if (label === 'LIST' || !label) {
-            const links = collectJobLinks($);
+            const links = collectJobLinks($, request.url);
             crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
 
             if (!collectDetails) {
@@ -296,17 +354,44 @@ const crawler = new CheerioCrawler({
             return;
         }
 
-        if (label === 'DETAIL') {
+    if (label === 'DETAIL') {
             // Check if we should skip (in case we got more enqueued than needed)
             if (jobsScraped >= RESULTS_WANTED) {
                 crawlerLog.info(`Skipping detail - already at limit: ${request.url}`);
                 return;
             }
 
-            const title = $('h1').first().text().trim();
-            const company = $('[data-cy="company-name"]').text().trim();
-            const location = $('[data-cy="location"]').text().trim();
-            const date_posted = $('[data-cy="posted-date"]').text().trim();
+            // Robust title/company/location/date extraction with fallbacks for different Workopolis templates
+            const title = (
+                $('h1.job-title').first().text() ||
+                $('h1').first().text() ||
+                $('[data-qa="job-title"]').text() ||
+                $('[itemprop="title"]').text() ||
+                ''
+            ).trim();
+
+            const company = (
+                $('[data-cy="company-name"]').text() ||
+                $('.company, .job-company, .employer, [data-qa="company"]').first().text() ||
+                $('.company-name').first().text() ||
+                ''
+            ).trim();
+
+            const location = (
+                $('[data-cy="location"]').text() ||
+                $('.location, .job-location, [data-qa="location"]').first().text() ||
+                $('meta[property="jobLocation"]')?.attr('content') ||
+                ''
+            ).trim();
+
+            // Date posted: check time tags, meta tags, or text labels
+            let date_posted = '';
+            date_posted = date_posted || $('time[datetime]').first().attr('datetime') || '';
+            date_posted = date_posted || $('meta[name="datePosted"]').attr('content') || '';
+            if (!date_posted) {
+                const postedText = $('*').filter((i, el) => /posted|date posted|posted on/i.test($(el).text())).first().text();
+                date_posted = postedText ? postedText.trim().replace(/\s+/g, ' ') : '';
+            }
 
             const container = findBestDescriptionContainer($);
             let description_html = sanitizeHtmlString(container?.html?.() || '');
@@ -330,6 +415,10 @@ const crawler = new CheerioCrawler({
                 _from: 'detail',
             };
             
+            // Log missing key fields for diagnostics
+            if (!title) crawlerLog.warn(`Detail page missing title: ${request.url}`);
+            if (!company) crawlerLog.debug(`Company not found for ${request.url}`);
+
             await Dataset.pushData(item);
             jobsScraped++;
             crawlerLog.info(`✓ Job ${jobsScraped}/${RESULTS_WANTED} saved: ${title || 'Untitled'}`);

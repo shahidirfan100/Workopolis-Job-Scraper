@@ -62,7 +62,11 @@
       "title": "Proxy configuration",
       "type": "object",
       "description": "Use Apify Proxy for the best results.",
-      "editor": "proxy"
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["AUTO"]
+      }
     },
     "cookies": {
       "title": "Custom cookies (raw header)",
