@@ -220,6 +220,13 @@ const findBestDescriptionContainer = ($) => {
         if ($el.find('p').length > 2) score += 50;
         if ($el.find('h2, h3, h4').length > 0) score += 25;
 
+        // Penalty for being just a small side-section like "Benefits"
+        const firstHeading = $el.find('h2, h3').first().text().trim().toLowerCase();
+        if (len < 500 && (firstHeading === 'benefits' || firstHeading === 'about the company')) {
+            score -= 150;
+        }
+
+
         // Penalty for repetitive content
         const words = text.split(' ');
         const uniqueWords = new Set(words);
@@ -334,13 +341,6 @@ const sanitizeDescription = ($, el, baseUrl) => {
     
     return html;
 };
-
-const htmlToText = (html) => (html || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h\d)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 
 const normalizeCookieHeader = ({ cookies, cookiesJson }) => {
     if (cookies && typeof cookies === 'string' && cookies.trim()) return cookies.trim();
@@ -571,6 +571,26 @@ const crawler = new CheerioCrawler({
                 }
             }
 
+            // Strategy 3: Find company element, then find location in its parent
+            if (!company || !location) {
+                const companyEl = $('a[href*="/company/"], .company-name, [data-qa*="company"]').first();
+                if (companyEl.length) {
+                    const parentContainer = companyEl.parent();
+                    if (parentContainer.length) {
+                        const parentText = cleanTextFromEl(parentContainer);
+                        const companyText = cleanTextFromEl(companyEl);
+
+                        if (!company) company = companyText;
+
+                        // The remaining text in the parent is likely the location
+                        const possibleLocation = parentText.replace(companyText, '').replace(/•|—|-/g, '').trim();
+                        if (possibleLocation.length > 1 && !location) {
+                            location = possibleLocation;
+                        }
+                    }
+                }
+            }
+
             // Fallback for company if not found in "Company —Location" pattern
             if (!company) {
                 const companySelectors = [
@@ -638,9 +658,9 @@ const crawler = new CheerioCrawler({
             if (!date_posted) {
                 $('span, div').each((_, el) => {
                     const text = cleanTextFromEl($(el));
-                    const dateMatch = text.match(/posted|(\d+\s+(day|week|month)s?\s+ago)/i);
-                    if (dateMatch && text.length < 30) {
-                        date_posted = dateMatch[1];
+                    if (text.toLowerCase().includes('posted') && text.length < 40) {
+                        const dateMatch = text.match(/(posted\s+.*ago|posted\s+on\s+.*)/i);
+                        if (dateMatch && dateMatch[0]) date_posted = dateMatch[0];
                         return false; // break
                     }
                 });
