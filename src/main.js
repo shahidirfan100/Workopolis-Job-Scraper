@@ -538,6 +538,38 @@ const crawler = new CheerioCrawler({
             let company = '';
             let location = '';
             
+            // --- STRATEGY 0: JSON-LD (Structured Data) ---
+            // This is the most reliable method if available.
+            const jsonLdScript = $('script[type="application/ld+json"]').first().html();
+            if (jsonLdScript) {
+                try {
+                    const jsonLd = JSON.parse(jsonLdScript);
+                    if (jsonLd['@type'] === 'JobPosting') {
+                        crawlerLog.info('Found JSON-LD data. Using it for extraction.');
+                        if (jsonLd.hiringOrganization && jsonLd.hiringOrganization.name) {
+                            company = String(jsonLd.hiringOrganization.name).trim();
+                        }
+                        if (jsonLd.jobLocation && jsonLd.jobLocation.address) {
+                            const { addressLocality, addressRegion, addressCountry } = jsonLd.jobLocation.address;
+                            location = [addressLocality, addressRegion, addressCountry]
+                                .filter(Boolean) // Remove empty parts
+                                .join(', ');
+                        }
+                        if (jsonLd.datePosted) {
+                            date_posted = String(jsonLd.datePosted).trim();
+                        }
+                        // Use title from JSON-LD if our primary method failed
+                        if ((!title || title.length < 3) && jsonLd.title) {
+                            title = String(jsonLd.title).trim();
+                        }
+                    }
+                } catch (e) {
+                    crawlerLog.debug(`Could not parse JSON-LD: ${e.message}`);
+                }
+            }
+
+            // --- FALLBACK STRATEGIES if JSON-LD is missing ---
+
             // Strategy 1: Look for a specific header container
             const headerEl = $('[data-testid="job-header"]').first();
             if (headerEl.length) {
@@ -634,6 +666,19 @@ const crawler = new CheerioCrawler({
                 }
             }
 
+            // Final location fallback: look for text nodes near the company name
+            if (company && !location) {
+                const companyEl = $(`*:contains('${company}')`).filter((_, el) => $(el).children().length === 0).last();
+                if (companyEl.length) {
+                    const parentText = cleanTextFromEl(companyEl.parent());
+                    const possibleLocation = parentText.replace(company, '').replace(/•|—|-/g, '').trim();
+                    if (possibleLocation.length > 1 && possibleLocation.length < 100) {
+                        location = possibleLocation;
+                        crawlerLog.debug(`Used final fallback to find location: "${location}"`);
+                    }
+                }
+            }
+
             // Date posted: Look for time elements or standalone date patterns
             let date_posted = '';
             
@@ -655,7 +700,7 @@ const crawler = new CheerioCrawler({
                 }
             }
 
-            if (!date_posted) {
+            if (!date_posted) { // Only run if not found in JSON-LD
                 $('span, div').each((_, el) => {
                     const text = cleanTextFromEl($(el));
                     if (text.toLowerCase().includes('posted') && text.length < 40) {
