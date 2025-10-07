@@ -180,11 +180,12 @@ const findBestDescriptionContainer = ($) => {
     // Fallback: find the largest text block that looks like job content
     let best = null;
     let bestScore = 0;
-    const scoredElements = new Map();
+    const scoredElements = new Map(); // Use a map to store {element: score}
     
     // Exclude common non-content patterns
     const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
     
+    // --- PASS 1: Calculate initial scores for all potential containers ---
     $('div, section, article, p').each((_, el) => {
         const $el = $(el);
         const text = $el.text().trim();
@@ -238,26 +239,30 @@ const findBestDescriptionContainer = ($) => {
             score += 100;
         }
 
-        // --- CONTEXT PENALTY ---
-        // If this element is inside another element we've already scored, it's likely a sub-part. Penalize it.
-        $el.parents().each((_, parent) => {
-            if (scoredElements.has(parent)) {
-                score -= 300;
-                return false; // break
-            }
-        });
-
         // Penalty for repetitive content
         const words = text.split(' ');
         const uniqueWords = new Set(words);
         if (uniqueWords.size < words.length * 0.3) score -= 100;
         
-        scoredElements.set(el, score);
+        scoredElements.set(el, { score, el: $el });
+    });
+
+    // --- PASS 2: Apply context penalties and find the best element ---
+    // This ensures a sub-element (like a 'Benefits' div) doesn't win over its parent.
+    for (const [el, data] of scoredElements.entries()) {
+        let { score, el: $el } = data;
+
+        // If this element's parent also has a score, it's a sub-element. Penalize it.
+        const parentEl = $el.parent()[0];
+        if (parentEl && scoredElements.has(parentEl)) {
+            score -= 400; // Heavy penalty for being a sub-part of another candidate
+        }
+
         if (score > bestScore) {
             bestScore = score;
             best = $el;
         }
-    });
+    }
 
     return best || $('main').first() || $('body');
 };
