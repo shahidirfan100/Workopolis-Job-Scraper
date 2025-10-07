@@ -189,6 +189,12 @@ const findBestDescriptionContainer = ($) => {
         const text = $el.text().trim();
         const len = text.length;
 
+        // Find the main job title element to check for proximity
+        const titleEl = $('h1').first();
+        const isNearTitle = titleEl.length > 0
+            ? ($el.parent().find(titleEl).length > 0 || $el.prev().find(titleEl).length > 0 || $el.next().find(titleEl).length > 0)
+            : false;
+
         // Skip short content, navigation, or excluded patterns
         if (len < 200 || excludePatterns.test(text)) return;
 
@@ -221,11 +227,15 @@ const findBestDescriptionContainer = ($) => {
         if ($el.find('h2, h3, h4').length > 0) score += 25;
 
         // Penalty for being just a small side-section like "Benefits"
-        const firstHeading = $el.find('h2, h3').first().text().trim().toLowerCase();
-        if (len < 500 && (firstHeading === 'benefits' || firstHeading === 'about the company')) {
-            score -= 150;
+        const firstHeading = $el.find('h2, h3, h4').first().text().trim().toLowerCase();
+        if (len < 800 && (firstHeading.includes('benefit') || firstHeading.includes('about'))) {
+            score -= 250; // Increase penalty
         }
 
+        // Bonus for being near the main H1 title
+        if (isNearTitle) {
+            score += 100;
+        }
 
         // Penalty for repetitive content
         const words = text.split(' ');
@@ -722,13 +732,8 @@ const crawler = new CheerioCrawler({
                 // Always generate HTML first from the best container
                 description_html = sanitizeDescription($, container, request.url);
 
-                // Then, reliably generate the text version from the sanitized HTML
-                if (description_html) {
-                    description_text = cheerioLoad(description_html).text().replace(/\s+/g, ' ').trim();
-                } else {
-                    // If HTML sanitization fails (rare), fall back to direct text extraction
-                    description_text = cleanTextFromEl(container);
-                }
+                // Always generate the text from the sanitized HTML to ensure consistency.
+                description_text = cheerioLoad(description_html || '').text().replace(/\s+/g, ' ').trim();
             } else {
                 crawlerLog.warn(`Could not find a suitable description container for ${request.url}`);
             }
