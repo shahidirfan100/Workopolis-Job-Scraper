@@ -180,6 +180,7 @@ const findBestDescriptionContainer = ($) => {
     // Fallback: find the largest text block that looks like job content
     let best = null;
     let bestScore = 0;
+    const scoredElements = new Map();
     
     // Exclude common non-content patterns
     const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
@@ -207,7 +208,7 @@ const findBestDescriptionContainer = ($) => {
         if (dateMatches && dateMatches.length > 3) return;
         
         // Calculate score based on job-relevant content
-        let score = len;
+        let score = len * 1.2; // Give a bit more weight to length
         
         // Bonus for job-related terms (lowercase)
         const jobTerms = [
@@ -237,11 +238,21 @@ const findBestDescriptionContainer = ($) => {
             score += 100;
         }
 
+        // --- CONTEXT PENALTY ---
+        // If this element is inside another element we've already scored, it's likely a sub-part. Penalize it.
+        $el.parents().each((_, parent) => {
+            if (scoredElements.has(parent)) {
+                score -= 300;
+                return false; // break
+            }
+        });
+
         // Penalty for repetitive content
         const words = text.split(' ');
         const uniqueWords = new Set(words);
         if (uniqueWords.size < words.length * 0.3) score -= 100;
         
+        scoredElements.set(el, score);
         if (score > bestScore) {
             bestScore = score;
             best = $el;
