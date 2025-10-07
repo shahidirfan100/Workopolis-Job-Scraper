@@ -157,7 +157,7 @@ const findBestDescriptionContainer = ($) => {
     // Remove skip links and navigation first
     $('a[href*="#main-content"], .skip-link, nav, header, footer').remove();
     
-    // Try specific job description selectors first - but validate them more thoroughly
+    // Try specific job description selectors first
     const specificSelectors = [
         '[data-testid="job-description"]',
         '.job-description',
@@ -171,158 +171,79 @@ const findBestDescriptionContainer = ($) => {
         const el = $(sel).first();
         if (el && el.length) {
             const text = el.text().trim();
-            // Increased minimum length and added more comprehensive validation
-            if (text.length > 500 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
-                // Ensure it's not just a small section like "Benefits"
-                const headings = el.find('h1, h2, h3, h4, h5, h6');
-                const isSmallSection = headings.length === 1 && 
-                    headings.first().text().trim().toLowerCase().match(/^(benefits?|about|overview|summary)$/);
+            if (text.length > 300 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
+                // Quick check: if it's just a small section and short, skip it
+                const isSmallSection = text.length < 800 && 
+                    /^(benefits?|about|overview|summary)/i.test(text.substring(0, 50));
                 
-                if (!isSmallSection || text.length > 1500) {
+                if (!isSmallSection) {
                     return el;
                 }
             }
         }
     }
 
-    // Fallback: find the largest text block that looks like job content
+    // Simplified fallback: find the largest meaningful text block
     let best = null;
     let bestScore = 0;
-    const scoredElements = new Map();
     
     // Exclude common non-content patterns
     const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
     
-    // --- PASS 1: Calculate initial scores for all potential containers ---
     $('div, section, article, main').each((_, el) => {
         const $el = $(el);
         const text = $el.text().trim();
         const len = text.length;
 
-        // Skip short content, navigation, or excluded patterns - increased minimum length
-        if (len < 300 || excludePatterns.test(text)) return;
+        // Skip short content or excluded patterns
+        if (len < 250 || excludePatterns.test(text)) return;
 
-        // Skip if it's mostly navigation links
-        const linkRatio = $el.find('a').length / Math.max(1, text.split(' ').length / 10);
-        if (linkRatio > 0.3) return;
-
-        // Skip if it contains mostly dates/years (likely metadata)
-        const dateMatches = text.match(/\b20\d{2}\b/g);
-        if (dateMatches && dateMatches.length > 3) return;
+        // Skip if it's mostly links
+        const linkRatio = $el.find('a').length / Math.max(1, text.split(' ').length / 15);
+        if (linkRatio > 0.25) return;
         
-        // Calculate score based on job-relevant content - improved scoring
-        let score = len * 1.5; // Increased weight for length
+        // Simple scoring: length + job relevance
+        let score = len;
         
-        // Bonus for job-related terms (expanded list)
-        const jobTerms = [
-            'responsibilities', 'requirements', 'qualifications', 'experience',
-            'skills', 'duties', 'role', 'position', 'candidate', 'applicant',
-            'salary', 'benefits', 'team', 'company', 'work', 'job', 'employment',
-            'description', 'summary', 'overview', 'what you', 'we are looking',
-            'ideal candidate', 'must have', 'required', 'preferred'
-        ];
-
+        // Quick job relevance check
         const lowerText = text.toLowerCase();
+        const jobTerms = ['responsibilities', 'requirements', 'qualifications', 'experience', 'skills', 'duties'];
         let jobTermCount = 0;
         jobTerms.forEach(term => {
             if (lowerText.includes(term)) {
-                score += 75; // Increased bonus
+                score += 300;
                 jobTermCount++;
             }
         });
-
-        // Extra bonus for having multiple job terms
-        if (jobTermCount >= 5) score += 200;
-        if (jobTermCount >= 8) score += 300;
-
+        
         // Bonus for structured content
-        const listItems = $el.find('ul li, ol li').length;
-        const paragraphs = $el.find('p').length;
-        const headings = $el.find('h2, h3, h4, h5, h6').length;
+        if ($el.find('ul li').length > 2) score += 200;
+        if ($el.find('p').length > 2) score += 100;
         
-        if (listItems > 2) score += 150;
-        if (paragraphs > 3) score += 100;
-        if (headings > 1) score += 75;
-
-        // Major penalty for being clearly just a small section
-        const allHeadings = $el.find('h1, h2, h3, h4, h5, h6');
-        if (allHeadings.length === 1) {
-            const headingText = allHeadings.first().text().trim().toLowerCase();
-            const sectionKeywords = ['benefit', 'about', 'overview', 'summary', 'contact', 'apply', 'location'];
-            const isSmallSection = sectionKeywords.some(keyword => headingText.includes(keyword));
-            
-            if (isSmallSection && len < 1200) {
-                score -= 800; // Much heavier penalty
-            }
+        // Penalty for small sections
+        if (len < 500 && /^(benefits?|about|overview|summary|contact|apply)/i.test(text.substring(0, 50))) {
+            score -= 500;
         }
 
-        // Penalty for very short sections with specific patterns
-        if (len < 600) {
-            const shortSectionPatterns = /^(benefits|about|overview|summary|contact|apply)/i;
-            if (shortSectionPatterns.test(text.substring(0, 50))) {
-                score -= 600;
+        // Strong penalty if this is a child of another candidate
+        let isChild = false;
+        $('div, section, article, main').each((_, otherEl) => {
+            if (otherEl !== el && $(otherEl).find(el).length > 0) {
+                const otherText = $(otherEl).text().trim();
+                if (otherText.length > len * 1.5) {
+                    isChild = true;
+                    return false; // break
+                }
             }
-        }
-
-        // Bonus for comprehensive content indicators
-        if (len > 1500) score += 200;
-        if (len > 2500) score += 300;
-        if (len > 4000) score += 400;
-
-        // Penalty for repetitive content
-        const words = text.split(' ');
-        const uniqueWords = new Set(words.map(w => w.toLowerCase()));
-        const uniquenessRatio = uniqueWords.size / words.length;
-        if (uniquenessRatio < 0.4) score -= 200;
+        });
         
-        scoredElements.set(el, { score, el: $el, length: len });
-    });
-
-    // --- PASS 2: Apply hierarchical penalties and find the best element ---
-    const finalScores = new Map();
-    
-    for (const [el, data] of scoredElements.entries()) {
-        let { score, el: $el, length } = data;
-
-        // Check if this element contains other scored elements (is a parent)
-        let isParent = false;
-        let largestChildLength = 0;
+        if (isChild) score -= 800;
         
-        for (const [otherEl, otherData] of scoredElements.entries()) {
-            if (el !== otherEl && $el.find(otherEl).length > 0) {
-                isParent = true;
-                largestChildLength = Math.max(largestChildLength, otherData.length);
-            }
-        }
-
-        // If this element's parent is also scored, it's a child - heavy penalty
-        let hasParent = false;
-        for (const [otherEl] of scoredElements.entries()) {
-            if (el !== otherEl && $(otherEl).find(el).length > 0) {
-                hasParent = true;
-                break;
-            }
-        }
-
-        if (hasParent) {
-            // Child elements get heavily penalized unless they're much more comprehensive
-            score -= 1000;
-        } else if (isParent && largestChildLength > 0) {
-            // Parent elements get bonus, especially if they contain substantial child content
-            const comprehensivenessBonus = Math.min(500, largestChildLength / 10);
-            score += comprehensivenessBonus;
-        }
-
-        finalScores.set(el, score);
-    }
-
-    // Find the best scoring element
-    for (const [el, score] of finalScores.entries()) {
         if (score > bestScore) {
             bestScore = score;
-            best = scoredElements.get(el).el;
+            best = $el;
         }
-    }
+    });
 
     return best || $('main').first() || $('body');
 };
@@ -429,18 +350,8 @@ const sanitizeDescription = ($, el, baseUrl) => {
 };
 
 // Validate if the extracted description seems complete
-const validateDescriptionCompleteness = (text, html, logger) => {
+const validateDescriptionCompleteness = (text, html) => {
     if (!text || text.length < 300) return true; // Definitely incomplete
-    
-    // Check for indicators of incomplete extraction
-    const incompleteIndicators = [
-        // Text that suggests this is just a section header or small part
-        /^(benefits?|about|overview|summary|contact|location|requirements?|qualifications?)\s*$/i,
-        // Very short descriptions with only basic info
-        /^.{0,500}$/,
-        // Text that ends abruptly with list items (common in partial extractions)
-        /\w+\s*$/
-    ];
     
     // Check for positive indicators of completeness
     const completenessIndicators = [
@@ -464,64 +375,34 @@ const validateDescriptionCompleteness = (text, html, logger) => {
                           text.length < 1000 && 
                           !text.toLowerCase().includes('responsibilities');
     
-    // Check if HTML suggests it's a small section
-    const htmlSectionCheck = html && cheerioLoad(html)('h2, h3, h4').length === 1 && 
-                            text.length < 1200;
+    // Quick check if HTML suggests it's a small section
+    const htmlSectionCheck = html && html.includes('<h') && text.length < 1200;
     
-    if (isLikelyIncomplete || isBenefitsOnly || htmlSectionCheck) {
-        logger.debug(`Description validation flags: incomplete=${isLikelyIncomplete}, benefitsOnly=${isBenefitsOnly}, smallSection=${htmlSectionCheck}`);
-        return true;
-    }
-    
-    return false;
+    return isLikelyIncomplete || isBenefitsOnly || htmlSectionCheck;
 };
 
-// Fallback method to find a more comprehensive description container
+// Fast fallback method to find a more comprehensive description container
 const findFallbackDescriptionContainer = ($, originalContainer) => {
-    // Try to find the parent or sibling containers that might contain the full description
-    const candidates = [];
-    
-    // Get parent containers
-    let parent = originalContainer.parent();
-    while (parent.length && parent.prop('tagName') !== 'BODY') {
-        candidates.push(parent);
-        parent = parent.parent();
-    }
-    
-    // Get sibling containers
-    originalContainer.siblings('div, section, article').each((_, el) => {
-        candidates.push($(el));
-    });
-    
-    // Find container with most comprehensive content
-    let bestCandidate = null;
-    let bestLength = 0;
-    
-    candidates.forEach(candidate => {
-        const text = candidate.text().trim();
-        const length = text.length;
+    // Quick check: just look at immediate parent
+    const parent = originalContainer.parent();
+    if (parent.length) {
+        const parentText = parent.text().trim();
+        const originalText = originalContainer.text().trim();
         
-        // Must be significantly larger and contain job-relevant content
-        if (length > bestLength && length > 1000) {
-            const jobRelevantTerms = [
-                'responsibilities', 'requirements', 'qualifications', 'experience',
-                'duties', 'role', 'candidate', 'skills'
-            ];
+        // If parent is significantly larger and contains job terms, use it
+        if (parentText.length > originalText.length * 2 && parentText.length > 800) {
+            const lowerParentText = parentText.toLowerCase();
+            const hasJobTerms = ['responsibilities', 'requirements', 'qualifications'].some(term => 
+                lowerParentText.includes(term)
+            );
             
-            const lowerText = text.toLowerCase();
-            const relevantTermCount = jobRelevantTerms.filter(term => 
-                lowerText.includes(term)
-            ).length;
-            
-            // Must have at least 3 job-relevant terms to be considered
-            if (relevantTermCount >= 3) {
-                bestCandidate = candidate;
-                bestLength = length;
+            if (hasJobTerms) {
+                return parent;
             }
         }
-    });
+    }
     
-    return bestCandidate;
+    return null;
 };
 
 const normalizeCookieHeader = ({ cookies, cookiesJson }) => {
@@ -907,10 +788,10 @@ const crawler = new CheerioCrawler({
                 // Always generate the text from the sanitized HTML to ensure consistency.
                 description_text = cheerioLoad(description_html || '').text().replace(/\s+/g, ' ').trim();
                 
-                // Validation: Check if the extracted description seems incomplete
-                const isIncomplete = validateDescriptionCompleteness(description_text, description_html, crawlerLog);
+                // Quick validation: Check if the extracted description seems incomplete
+                const isIncomplete = validateDescriptionCompleteness(description_text, description_html);
                 
-                if (isIncomplete) {
+                if (isIncomplete && description_text.length < 800) {
                     crawlerLog.warn(`Description seems incomplete (${description_text.length} chars). Trying fallback method...`);
                     
                     // Fallback: Try to find a more comprehensive container
@@ -939,35 +820,14 @@ const crawler = new CheerioCrawler({
             crawlerLog.info(`  Date: ${date_posted || 'MISSING'}`);
             crawlerLog.info(`  Description length: ${description_text ? description_text.length : 0} chars`);
             
-            // Enhanced debugging for description extraction
+            // Basic debugging for description extraction
             if (description_text && description_text.length > 0) {
-                crawlerLog.debug(`  Description preview: ${description_text.substring(0, 200)}...`);
+                crawlerLog.debug(`  Description preview: ${description_text.substring(0, 150)}...`);
                 
-                // Log potential issues
-                if (description_text.length < 500) {
-                    crawlerLog.warn(`  ⚠️  Description seems short (${description_text.length} chars)`);
+                // Only log if description seems problematic
+                if (description_text.length < 400) {
+                    crawlerLog.warn(`  ⚠️  Short description (${description_text.length} chars)`);
                 }
-                
-                // Check if it looks like just a section
-                const firstHeading = cheerioLoad(description_html || '')('h1, h2, h3, h4').first().text().trim();
-                if (firstHeading) {
-                    crawlerLog.debug(`  First heading: "${firstHeading}"`);
-                    if (firstHeading.toLowerCase().match(/^(benefits?|about|overview)$/)) {
-                        crawlerLog.warn(`  ⚠️  Description appears to be just a "${firstHeading}" section`);
-                    }
-                }
-            }
-            
-            if (description_html && description_html.length > 0) {
-                crawlerLog.debug(`  HTML length: ${description_html.length} chars`);
-                
-                // Count structural elements for quality assessment
-                const $htmlCheck = cheerioLoad(description_html);
-                const headingCount = $htmlCheck('h1, h2, h3, h4, h5, h6').length;
-                const paragraphCount = $htmlCheck('p').length;
-                const listCount = $htmlCheck('ul, ol').length;
-                
-                crawlerLog.debug(`  Structure: ${headingCount} headings, ${paragraphCount} paragraphs, ${listCount} lists`);
             }
 
             const item = {
