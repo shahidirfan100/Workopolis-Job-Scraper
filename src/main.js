@@ -156,8 +156,8 @@ const findNextUrl = ($, currentUrl) => {
 const findBestDescriptionContainer = ($) => {
     // Remove skip links and navigation first
     $('a[href*="#main-content"], .skip-link, nav, header, footer').remove();
-    
-    // Try specific job description selectors first
+
+    // Try specific job description selectors first (fast path)
     const specificSelectors = [
         '[data-testid="job-description"]',
         '.job-description',
@@ -172,80 +172,71 @@ const findBestDescriptionContainer = ($) => {
         if (el && el.length) {
             const text = el.text().trim();
             if (text.length > 300 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
-                // Quick check: if it's just a small section and short, skip it
-                const isSmallSection = text.length < 800 && 
-                    /^(benefits?|about|overview|summary)/i.test(text.substring(0, 50));
-                
-                if (!isSmallSection) {
-                    return el;
-                }
+                const isSmallSection = text.length < 800 && /^(benefits?|about|overview|summary)/i.test(text.substring(0, 50));
+                if (!isSmallSection) return el;
             }
         }
     }
 
-    // Simplified fallback: find the largest meaningful text block
-    let best = null;
-    let bestScore = 0;
-    
-    // Exclude common non-content patterns
+    // Build a cached list of candidate nodes to avoid repeated DOM traversals
+    const nodeList = $('div, section, article, main').toArray();
+    const candidates = [];
     const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
-    
-    $('div, section, article, main').each((_, el) => {
-        const $el = $(el);
+
+    for (const node of nodeList) {
+        const $el = $(node);
         const text = $el.text().trim();
         const len = text.length;
 
-        // Skip short content or excluded patterns
-        if (len < 250 || excludePatterns.test(text)) return;
+        if (len < 250 || excludePatterns.test(text)) continue;
 
         // Skip if it's mostly links
         const linkRatio = $el.find('a').length / Math.max(1, text.split(' ').length / 15);
-        if (linkRatio > 0.25) return;
-        
-        // Simple scoring: length + job relevance
-        let score = len;
-        
-        // Quick job relevance check
-        const lowerText = text.toLowerCase();
-        const jobTerms = ['responsibilities', 'requirements', 'qualifications', 'experience', 'skills', 'duties'];
-        let jobTermCount = 0;
-        jobTerms.forEach(term => {
-            if (lowerText.includes(term)) {
-                score += 300;
-                jobTermCount++;
-            }
-        });
-        
-        // Bonus for structured content
-        if ($el.find('ul li').length > 2) score += 200;
-        if ($el.find('p').length > 2) score += 100;
-        
-        // Penalty for small sections
-        if (len < 500 && /^(benefits?|about|overview|summary|contact|apply)/i.test(text.substring(0, 50))) {
-            score -= 500;
-        }
+        if (linkRatio > 0.25) continue;
 
-        // Strong penalty if this is a child of another candidate
-        let isChild = false;
-        $('div, section, article, main').each((_, otherEl) => {
-            if (otherEl !== el && $(otherEl).find(el).length > 0) {
-                const otherText = $(otherEl).text().trim();
-                if (otherText.length > len * 1.5) {
-                    isChild = true;
-                    return false; // break
-                }
-            }
-        });
-        
-        if (isChild) score -= 800;
-        
-        if (score > bestScore) {
-            bestScore = score;
-            best = $el;
-        }
-    });
+        candidates.push({ node, $el, text, len, score: len });
+    }
 
-    return best || $('main').first() || $('body');
+    if (!candidates.length) return $('main').first() || $('body');
+
+    // Precompute job-term boosts and structure bonuses
+    const jobTerms = ['responsibilities', 'requirements', 'qualifications', 'experience', 'skills', 'duties'];
+    for (const cand of candidates) {
+        const lowerText = cand.text.toLowerCase();
+        let termCount = 0;
+        for (const t of jobTerms) {
+            if (lowerText.includes(t)) termCount++;
+        }
+        if (termCount) cand.score += termCount * 300;
+        if (cand.$el.find('ul li').length > 2) cand.score += 200;
+        if (cand.$el.find('p').length > 2) cand.score += 100;
+
+        // Penalty for small section headings
+        if (cand.len < 500 && /^(benefits?|about|overview|summary|contact|apply)/i.test(cand.text.substring(0, 50))) {
+            cand.score -= 500;
+        }
+    }
+
+    // Create a Set for quick ancestor checks
+    const candidateNodeSet = new Set(candidates.map(c => c.node));
+
+    // For each candidate, determine if it has an ancestor candidate; penalize children
+    for (const cand of candidates) {
+        let p = cand.node.parent;
+        while (p && p.type) {
+            if (candidateNodeSet.has(p)) {
+                // found an ancestor candidate
+                cand.score -= 800;
+                break;
+            }
+            p = p.parent;
+        }
+    }
+
+    // Pick the candidate with the highest score
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+    return (best && best.$el) || $('main').first() || $('body');
 };
 
 // Helper to clean text from a Cheerio element: remove icons/images/buttons before reading text
@@ -792,7 +783,7 @@ const crawler = new CheerioCrawler({
                 const isIncomplete = validateDescriptionCompleteness(description_text, description_html);
                 
                 if (isIncomplete && description_text.length < 800) {
-                    crawlerLog.warn(`Description seems incomplete (${description_text.length} chars). Trying fallback method...`);
+                    crawlerLog.info(`⚠️ WARN: Description seems incomplete (${description_text.length} chars). Trying fallback method...`);
                     
                     // Fallback: Try to find a more comprehensive container
                     const fallbackContainer = findFallbackDescriptionContainer($, container);
@@ -809,7 +800,7 @@ const crawler = new CheerioCrawler({
                     }
                 }
             } else {
-                crawlerLog.warn(`Could not find a suitable description container for ${request.url}`);
+                crawlerLog.info(`⚠️ WARN: Could not find a suitable description container for ${request.url}`);
             }
             
             // Log extraction results for debugging
@@ -826,7 +817,7 @@ const crawler = new CheerioCrawler({
                 
                 // Only log if description seems problematic
                 if (description_text.length < 400) {
-                    crawlerLog.warn(`  ⚠️  Short description (${description_text.length} chars)`);
+                    crawlerLog.info(`⚠️ WARN: Short description (${description_text.length} chars)`);
                 }
             }
 
@@ -844,7 +835,7 @@ const crawler = new CheerioCrawler({
             };
             
             // Log missing key fields for diagnostics
-            if (!title) crawlerLog.warn(`Detail page missing title: ${request.url}`);
+            if (!title) crawlerLog.info(`⚠️ WARN: Detail page missing title: ${request.url}`);
             if (!company) crawlerLog.debug(`Company not found for ${request.url}`);
 
             await Dataset.pushData(item);
