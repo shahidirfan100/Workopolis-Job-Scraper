@@ -134,14 +134,8 @@ const findNextUrl = ($, currentUrl) => {
     return null;
 };
 
-// FIXED: Work on a clone to avoid modifying the original $ object
+// OPTIMIZED: Faster container detection without cloning
 const findBestDescriptionContainer = ($) => {
-    // Create a clone to avoid modifying the original DOM
-    const $clone = cheerioLoad($.html());
-    
-    // Remove skip links and navigation from the clone
-    $clone('a[href*="#main-content"], .skip-link, nav, header, footer').remove();
-    
     // Try specific job description selectors first
     const specificSelectors = [
         '[data-testid="job-description"]',
@@ -153,24 +147,23 @@ const findBestDescriptionContainer = ($) => {
     ];
 
     for (const sel of specificSelectors) {
-        const el = $clone(sel).first();
+        const el = $(sel).first();
         if (el && el.length) {
             const text = el.text().trim();
             if (text.length > 100 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
-                // Return the selector, not the element, so we can find it in the original $
-                return { selector: sel, $original: $ };
+                return el;
             }
         }
     }
 
-    // Fallback: find the largest text block in the clone
+    // Fallback: find the largest text block
     let best = null;
     let bestScore = 0;
     
     const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
     
-    $clone('div, section, article').each((_, el) => {
-        const $el = $clone(el);
+    $('div, section, article').each((_, el) => {
+        const $el = $(el);
         const text = $el.text().trim();
         const len = text.length;
 
@@ -214,26 +207,9 @@ const findBestDescriptionContainer = ($) => {
         }
     });
 
-    // Return null if no container found, we'll use fallback in the handler
-    if (!best || !best.length) return null;
-    
-    // Try to find a unique selector for this element in the original DOM
-    const tagName = best[0].tagName || best[0].name || 'div';
-    const classes = best.attr('class');
-    
-    if (classes) {
-        const classSelector = `.${classes.split(' ').join('.')}`;
-        const matching = $(classSelector);
-        if (matching.length === 1) {
-            return { selector: classSelector, $original: $ };
-        }
-    }
-    
-    // Fallback to main or body
-    return { selector: 'main', $original: $ };
+    return best || $('main').first() || $('body');
 };
 
-// Helper to clean text from a Cheerio element
 const cleanTextFromEl = ($el) => {
     if (!$el || !$el.length) return '';
     const clone = $el.clone();
@@ -253,7 +229,6 @@ const cleanTextFromEl = ($el) => {
     return txt;
 };
 
-// FIXED: Sanitize description with better error handling
 const sanitizeDescription = ($, el, baseUrl) => {
     if (!el || !el.length) return '';
     
@@ -300,8 +275,10 @@ const sanitizeDescription = ($, el, baseUrl) => {
         });
 
         let removedSomething = true;
-        while (removedSomething) {
+        let iterations = 0;
+        while (removedSomething && iterations < 5) { // Limit iterations to prevent slowness
             removedSomething = false;
+            iterations++;
             clone.find('*').each((_, n) => {
                 const $n = $(n);
                 const text = $n.text().trim();
@@ -322,7 +299,6 @@ const sanitizeDescription = ($, el, baseUrl) => {
         
         return html;
     } catch (error) {
-        log.error(`Error sanitizing description: ${error.message}`);
         return '';
     }
 };
@@ -638,70 +614,40 @@ const crawler = new CheerioCrawler({
                 }
             }
 
-            // FIXED: Description extraction with guaranteed fallbacks
+            // FIXED: Improved description extraction
             let description_html = '';
             let description_text = '';
 
-            // Try to find the best container
-            const containerResult = findBestDescriptionContainer($);
+            const container = findBestDescriptionContainer($);
             
-            if (containerResult && containerResult.selector) {
-                const container = containerResult.$original(containerResult.selector).first();
+            if (container && container.length) {
+                // Extract text first (faster and always works)
+                description_text = cleanTextFromEl(container);
                 
-                if (container && container.length) {
-                    // Generate HTML
-                    description_html = sanitizeDescription($, container, request.url);
-                    
-                    // Generate text from HTML if available
-                    if (description_html && description_html.length > 50) {
-                        try {
-                            description_text = cheerioLoad(description_html).text().replace(/\s+/g, ' ').trim();
-                        } catch (e) {
-                            crawlerLog.warn(`Error converting HTML to text: ${e.message}`);
-                        }
-                    }
-                    
-                    // Fallback: If HTML->text conversion failed, get text directly
-                    if (!description_text || description_text.length < 50) {
-                        description_text = cleanTextFromEl(container);
-                    }
-                    
-                    // Final fallback: If HTML is missing but we have text, keep it
-                    // If text is missing but we have HTML, extract text again
-                    if (!description_html && description_text && description_text.length > 50) {
-                        crawlerLog.warn('HTML extraction failed but text available - keeping text only');
-                    } else if (description_html && (!description_text || description_text.length < 50)) {
-                        crawlerLog.warn('Text extraction weak - re-extracting from HTML');
-                        try {
-                            description_text = cheerioLoad(description_html).text().replace(/\s+/g, ' ').trim();
-                        } catch (e) {
-                            crawlerLog.error(`Failed to extract text from HTML: ${e.message}`);
+                // Then try HTML sanitization
+                description_html = sanitizeDescription($, container, request.url);
+                
+                // If HTML sanitization failed or produced very short result, try to reconstruct from text
+                if (!description_html || description_html.length < 100) {
+                    if (description_text && description_text.length > 100) {
+                        // We have good text but poor HTML - create basic HTML wrapper
+                        const paragraphs = description_text.split(/\.\s+/).filter(p => p.trim().length > 20);
+                        if (paragraphs.length > 0) {
+                            description_html = paragraphs.map(p => `<p>${p.trim()}.</p>`).join(' ');
                         }
                     }
                 }
-            }
-            
-            // Ultimate fallback: Extract from main/body if both are still empty
-            if ((!description_html || description_html.length < 50) && (!description_text || description_text.length < 50)) {
-                crawlerLog.warn(`Primary extraction failed for ${request.url}, using ultimate fallback`);
                 
-                const fallbackContainer = $('main').first().length ? $('main').first() : $('body').first();
-                
-                if (fallbackContainer && fallbackContainer.length) {
-                    // Try HTML first
-                    description_html = sanitizeDescription($, fallbackContainer, request.url);
-                    
-                    // Get text
-                    if (description_html && description_html.length > 50) {
-                        try {
-                            description_text = cheerioLoad(description_html).text().replace(/\s+/g, ' ').trim();
-                        } catch (e) {
-                            description_text = cleanTextFromEl(fallbackContainer);
-                        }
-                    } else {
-                        description_text = cleanTextFromEl(fallbackContainer);
+                // If we have HTML but weak text, re-extract text from HTML
+                if (description_html && description_html.length > 100 && (!description_text || description_text.length < 100)) {
+                    try {
+                        description_text = cheerioLoad(description_html).text().replace(/\s+/g, ' ').trim();
+                    } catch (e) {
+                        // Keep whatever text we have
                     }
                 }
+            } else {
+                crawlerLog.warning(`Could not find description container for ${request.url}`);
             }
             
             // Log extraction results
@@ -710,20 +656,8 @@ const crawler = new CheerioCrawler({
             crawlerLog.info(`  Company: ${company || 'MISSING'}`);
             crawlerLog.info(`  Location: ${location || 'MISSING'}`);
             crawlerLog.info(`  Date: ${date_posted || 'MISSING'}`);
-            crawlerLog.info(`  Description HTML length: ${description_html ? description_html.length : 0} chars`);
-            crawlerLog.info(`  Description text length: ${description_text ? description_text.length : 0} chars`);
-            
-            if (description_text && description_text.length > 0) {
-                crawlerLog.debug(`  Text preview: ${description_text.substring(0, 200)}...`);
-            }
-            
-            // Validation: Warn if either description is missing
-            if (!description_html || description_html.length < 50) {
-                crawlerLog.warn(`⚠️  Missing or short HTML description for ${request.url}`);
-            }
-            if (!description_text || description_text.length < 50) {
-                crawlerLog.warn(`⚠️  Missing or short text description for ${request.url}`);
-            }
+            crawlerLog.info(`  Description HTML: ${description_html ? description_html.length : 0} chars`);
+            crawlerLog.info(`  Description text: ${description_text ? description_text.length : 0} chars`);
 
             const item = {
                 url: request.url,
@@ -738,14 +672,8 @@ const crawler = new CheerioCrawler({
                 _from: 'detail',
             };
             
-            // Log missing key fields for diagnostics
-            if (!title) crawlerLog.warn(`Detail page missing title: ${request.url}`);
+            if (!title) crawlerLog.warning(`Detail page missing title: ${request.url}`);
             if (!company) crawlerLog.debug(`Company not found for ${request.url}`);
-            if (!item.description_html && !item.description_text) {
-                crawlerLog.error(`❌ Both descriptions missing for ${request.url}`);
-            } else if (!item.description_html || !item.description_text) {
-                crawlerLog.warn(`⚠️  Only one description type available for ${request.url}`);
-            }
 
             await Dataset.pushData(item);
             jobsScraped++;
