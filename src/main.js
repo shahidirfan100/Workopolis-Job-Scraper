@@ -50,42 +50,48 @@ const buildStartUrl = (kw, loc, date) => {
     return url.href;
 };
 
+// Whitelist for safe URL schemes to prevent SSRF/XSS
+const SAFE_URL_SCHEMES = new Set(['http:', 'https:']);
+
+const isValidUrl = (urlString) => {
+    try {
+        const parsed = new URL(urlString, 'https://www.workopolis.com');
+        return SAFE_URL_SCHEMES.has(parsed.protocol) && parsed.hostname.includes('workopolis.com');
+    } catch { return false; }
+};
+
 const toAbs = (href) => {
-    try { return new URL(href, 'https://www.workopolis.com').href; } catch { return null; }
+    if (!href || typeof href !== 'string') return null;
+    try {
+        const abs = new URL(href, 'https://www.workopolis.com').href;
+        return isValidUrl(abs) ? abs : null;
+    } catch { return null; }
 };
 
 const collectJobLinks = ($, baseUrl) => {
     // Broad heuristics to capture job detail links on Workopolis search pages.
     const links = new Set();
 
-    const anchorCandidates = [];
+    // Simplified regex to prevent ReDoS - more restrictive but safer
+    const jobHrefRx = /\/jobsearch\/viewjob\/|\/job[\/\-_]|jobId=/i;
 
-    // Common containers
-    anchorCandidates.push(...$('a[href]')); // start with all anchors and filter below
-
-    // Filter anchors that look like job detail pages
-    // Workopolis uses paths like /jobsearch/viewjob/<id> as well as /job/... in some templates
-    const jobHrefRx = /\/jobsearch\/viewjob\/(?:[-_a-zA-Z0-9%_]+)|\/job(\/|[-_a-zA-Z0-9?=&%]+)|\/(?:en\/)?job[s]?[-_a-zA-Z0-9]*/i;
-
-    anchorCandidates.forEach((i, a) => {
+    $('a[href]').each((i, a) => {
         try {
             const href = String($(a).attr('href') || '').trim();
-            if (!href) return;
-            // ignore anchors that are page anchors or javascript
-            if (/^#|^javascript:/i.test(href)) return;
+            if (!href || href.length > 2000) return; // Bound input length
+            if (/^[#\s]/.test(href)) return; // Skip fragments and whitespace-only
 
-            // If href contains 'job' token it's likely a detail link
-            if (jobHrefRx.test(href) || /job[-_]?id=|jobId=/i.test(href)) {
-                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
-                if (abs) links.add(abs);
+            if (jobHrefRx.test(href)) {
+                const abs = toAbs(href);
+                if (abs && isValidUrl(abs)) links.add(abs);
                 return;
             }
 
             // Heuristic: anchors inside listing items
             const parent = $(a).closest('li, article, .result, .job, .search-result, .job-listing, .job-card, .searchCard');
             if (parent && parent.length) {
-                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
-                if (abs && abs.includes('workopolis.com')) links.add(abs);
+                const abs = toAbs(href);
+                if (abs && isValidUrl(abs)) links.add(abs);
             }
         } catch (e) {
             // ignore
@@ -94,37 +100,65 @@ const collectJobLinks = ($, baseUrl) => {
 
     // Fallback: if no links detected, try anchors containing known jobsearch path
     if (!links.size) {
-        $('a[href]').each((_, a) => {
+        $('a[href*="/jobsearch/viewjob"]').each((_, a) => {
             const href = String($(a).attr('href') || '').trim();
-            if (!href) return;
-            if (href.includes('/jobsearch/viewjob')) {
-                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
-                if (abs) links.add(abs);
+            if (href && href.length < 2000) {
+                const abs = toAbs(href);
+                if (abs && isValidUrl(abs)) links.add(abs);
             }
         });
     }
 
-    // Return unique links with some ordering
     return [...links].filter(Boolean);
 };
 
+// Track visited pagination URLs to prevent infinite loops
+const visitedPaginationUrls = new Set();
+
 const findNextUrl = ($, currentUrl) => {
+    // Prevent cycles
+    if (!currentUrl || typeof currentUrl !== 'string') return null;
+    
     // Try common next-link patterns first
     const relNext = $('a[rel="next"]').attr('href');
-    if (relNext) return toAbs(relNext) || null;
+    if (relNext) {
+        const abs = toAbs(relNext);
+        if (abs && isValidUrl(abs) && abs !== currentUrl && !visitedPaginationUrls.has(abs)) {
+            visitedPaginationUrls.add(abs);
+            return abs;
+        }
+    }
 
     const ariaNext = $('a[aria-label*="next" i], button[aria-label*="next" i]').first().attr('href');
-    if (ariaNext) return toAbs(ariaNext) || null;
+    if (ariaNext) {
+        const abs = toAbs(ariaNext);
+        if (abs && isValidUrl(abs) && abs !== currentUrl && !visitedPaginationUrls.has(abs)) {
+            visitedPaginationUrls.add(abs);
+            return abs;
+        }
+    }
 
     // Pagination next button (case-insensitive text match)
     const nextByText = $('a, button').filter((_, el) => /next|›|»/i.test($(el).text())).first().attr('href');
-    if (nextByText) return toAbs(nextByText) || null;
+    if (nextByText) {
+        const abs = toAbs(nextByText);
+        if (abs && isValidUrl(abs) && abs !== currentUrl && !visitedPaginationUrls.has(abs)) {
+            visitedPaginationUrls.add(abs);
+            return abs;
+        }
+    }
 
     // Try to find active page and take its next sibling's href
     const active = $('.pagination .active, .pagination li.active, .pagination li.current').first();
     if (active && active.length) {
         const next = active.next('li').find('a').attr('href');
-        if (next) return toAbs(next) || null;
+        if (next) {
+            const abs = toAbs(next);
+            if (abs && isValidUrl(abs) && abs !== currentUrl && !visitedPaginationUrls.has(abs)) {
+                visitedPaginationUrls.add(abs);
+                return abs;
+            }
+        }
     }
 
     // Fallback: increment common page query params (page, p, pg)
@@ -133,18 +167,16 @@ const findNextUrl = ($, currentUrl) => {
         const pageParamCandidates = ['page', 'p', 'pg', 'pageNumber', 'start'];
         for (const p of pageParamCandidates) {
             if (u.searchParams.has(p)) {
-                const cur = Number(u.searchParams.get(p) || '1');
-                if (!Number.isNaN(cur)) {
+                const cur = parseInt(u.searchParams.get(p) || '1', 10);
+                if (!Number.isNaN(cur) && cur > 0 && cur < 10000) { // Sanity check
                     u.searchParams.set(p, String(cur + 1));
-                    return u.href;
+                    const nextHref = u.href;
+                    if (!visitedPaginationUrls.has(nextHref)) {
+                        visitedPaginationUrls.add(nextHref);
+                        return nextHref;
+                    }
                 }
             }
-        }
-
-        // If no page param, try adding 'page=2' when the url has a search path
-        if (![...u.searchParams.keys()].length) {
-            u.searchParams.set('page', '2');
-            return u.href;
         }
     } catch (e) {
         // ignore
@@ -249,11 +281,11 @@ const cleanTextFromEl = ($el) => {
     
     let txt = clone.text() || '';
     
-    // Clean up whitespace and common artifacts
+    // Clean up whitespace - preserve all printable Unicode
     txt = String(txt)
         .replace(/\s+/g, ' ')           // normalize whitespace
         .replace(/[\r\n\t]+/g, ' ')     // remove line breaks and tabs
-        .replace(/[^\x20-\x7E\u00A0-\u024F\u1E00-\u1EFF]/g, '') // remove non-printable chars but keep accented
+        .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove only control characters, keep all printable Unicode
         .trim();
         
     // Remove common UI artifacts
@@ -276,7 +308,7 @@ const sanitizeDescription = ($, el, baseUrl) => {
     clone.find('*').each((_, node) => {
         const $node = $(node);
         const text = $node.text().trim();
-        if (text.match(/^(Skip to|Back to|Quick apply|Apply now|Sign in|Create alert)$/i)) {
+        if (/^(Skip to|Back to|Quick apply|Apply now|Sign in|Create alert)$/i.test(text)) {
             $node.remove();
         }
     });
@@ -290,14 +322,20 @@ const sanitizeDescription = ($, el, baseUrl) => {
             // Keep href on anchors but sanitize them
             if (tag === 'a' && attr === 'href') {
                 const hrefVal = $(node).attr('href');
+                if (!hrefVal) { $(node).removeAttr('href'); continue; }
                 try {
                     // Skip internal navigation links
-                    if (hrefVal && hrefVal.includes('#main-content')) {
+                    if (hrefVal.includes('#main-content')) {
                         $(node).remove();
                         return;
                     }
-                    const abs = new URL(hrefVal, baseUrl || 'https://www.workopolis.com').href;
-                    $(node).attr('href', abs);
+                    const safeBase = (baseUrl && isValidUrl(baseUrl)) ? baseUrl : 'https://www.workopolis.com';
+                    const abs = new URL(hrefVal, safeBase).href;
+                    if (isValidUrl(abs)) {
+                        $(node).attr('href', abs);
+                    } else {
+                        $(node).removeAttr('href');
+                    }
                 } catch {
                     $(node).removeAttr('href');
                 }
@@ -306,7 +344,7 @@ const sanitizeDescription = ($, el, baseUrl) => {
             
             // Keep essential structure attributes for lists and headings
             if ((tag === 'ul' || tag === 'ol') && attr === 'type') continue;
-            if ((tag.match(/^h[1-6]$/)) && attr === 'id') continue;
+            if (/^h[1-6]$/.test(tag) && attr === 'id') continue;
             
             // Remove all other attributes
             $(node).removeAttr(attr);
@@ -315,7 +353,8 @@ const sanitizeDescription = ($, el, baseUrl) => {
 
     // Remove empty elements recursively
     let removedSomething = true;
-    while (removedSomething) {
+    let maxIterations = 10; // Prevent infinite loop
+    while (removedSomething && maxIterations-- > 0) {
         removedSomething = false;
         clone.find('*').each((_, n) => {
             const $n = $(n);
@@ -483,11 +522,14 @@ const crawler = new CheerioCrawler({
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($, request.url);
             crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
-            if (links.length) {
-                const sample = links.slice(0, 6).join('\n - ');
-                crawlerLog.debug(`Sample links:\n - ${sample}`);
-            } else {
-                crawlerLog.debug('No candidate links found on this list page (links.length === 0)');
+            
+            // Early return if no links and already at limit
+            if (links.length === 0) {
+                crawlerLog.warning(`No jobs found on page ${pageNo}`);
+                if (jobsScraped >= RESULTS_WANTED || shouldStopEnqueuing) {
+                    return;
+                }
+                // Continue to next page to find more
             }
 
             if (!collectDetails) {
@@ -723,13 +765,16 @@ const crawler = new CheerioCrawler({
 
             // Final location fallback: look for text nodes near the company name
             if (company && !location) {
-                const companyEl = $(`*:contains('${company}')`).filter((_, el) => $(el).children().length === 0).last();
+                // SAFE: Use .filter() with text comparison instead of :contains() to prevent selector injection
+                const companyEl = $('*').filter((_, el) => {
+                    const $el = $(el);
+                    return $el.children().length === 0 && $el.text().includes(company);
+                }).last();
                 if (companyEl.length) {
                     const parentText = cleanTextFromEl(companyEl.parent());
                     const possibleLocation = parentText.replace(company, '').replace(/•|—|-/g, '').trim();
                     if (possibleLocation.length > 1 && possibleLocation.length < 100) {
                         location = possibleLocation;
-                        crawlerLog.debug(`Used final fallback to find location: "${location}"`);
                     }
                 }
             }
@@ -776,49 +821,39 @@ const crawler = new CheerioCrawler({
                 // Always generate HTML first from the best container
                 description_html = sanitizeDescription($, container, request.url);
 
-                // Always generate the text from the sanitized HTML to ensure consistency.
-                description_text = cheerioLoad(description_html || '').text().replace(/\s+/g, ' ').trim();
+                // OPTIMIZED: Extract text from existing Cheerio instance instead of re-parsing
+                description_text = container.text().replace(/\s+/g, ' ').trim();
                 
                 // Quick validation: Check if the extracted description seems incomplete
                 const isIncomplete = validateDescriptionCompleteness(description_text, description_html);
                 
                 if (isIncomplete && description_text.length < 800) {
-                    crawlerLog.info(`⚠️ WARN: Description seems incomplete (${description_text.length} chars). Trying fallback method...`);
+                    crawlerLog.debug(`Description seems incomplete (${description_text.length} chars). Trying fallback...`);
                     
                     // Fallback: Try to find a more comprehensive container
                     const fallbackContainer = findFallbackDescriptionContainer($, container);
                     
                     if (fallbackContainer && fallbackContainer.length && fallbackContainer[0] !== container[0]) {
                         const fallbackHtml = sanitizeDescription($, fallbackContainer, request.url);
-                        const fallbackText = cheerioLoad(fallbackHtml || '').text().replace(/\s+/g, ' ').trim();
+                        const fallbackText = fallbackContainer.text().replace(/\s+/g, ' ').trim();
                         
                         if (fallbackText.length > description_text.length * 1.5) {
-                            crawlerLog.info(`Fallback found better description (${fallbackText.length} vs ${description_text.length} chars)`);
+                            crawlerLog.debug(`Fallback found better description (${fallbackText.length} vs ${description_text.length} chars)`);
                             description_html = fallbackHtml;
                             description_text = fallbackText;
                         }
                     }
                 }
             } else {
-                crawlerLog.info(`⚠️ WARN: Could not find a suitable description container for ${request.url}`);
+                crawlerLog.debug(`No description container found for ${request.url}`);
             }
             
-            // Log extraction results for debugging
-            crawlerLog.info(`Extracted from ${request.url}:`);
-            crawlerLog.info(`  Title: ${title || 'MISSING'}`);
-            crawlerLog.info(`  Company: ${company || 'MISSING'}`);
-            crawlerLog.info(`  Location: ${location || 'MISSING'}`);
-            crawlerLog.info(`  Date: ${date_posted || 'MISSING'}`);
-            crawlerLog.info(`  Description length: ${description_text ? description_text.length : 0} chars`);
-            
-            // Basic debugging for description extraction
-            if (description_text && description_text.length > 0) {
-                crawlerLog.debug(`  Description preview: ${description_text.substring(0, 150)}...`);
-                
-                // Only log if description seems problematic
-                if (description_text.length < 400) {
-                    crawlerLog.info(`⚠️ WARN: Short description (${description_text.length} chars)`);
-                }
+            // Only log if critical fields are missing
+            if (!title) {
+                crawlerLog.warning(`Missing title: ${request.url}`);
+            }
+            if (!description_text || description_text.length < 300) {
+                crawlerLog.warning(`Short/missing description (${description_text?.length || 0} chars): ${request.url}`);
             }
 
             const item = {
@@ -833,10 +868,6 @@ const crawler = new CheerioCrawler({
                 _fetchedAt: new Date().toISOString(),
                 _from: 'detail',
             };
-            
-            // Log missing key fields for diagnostics
-            if (!title) crawlerLog.info(`⚠️ WARN: Detail page missing title: ${request.url}`);
-            if (!company) crawlerLog.debug(`Company not found for ${request.url}`);
 
             await Dataset.pushData(item);
             jobsScraped++;
