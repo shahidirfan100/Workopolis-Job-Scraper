@@ -33,6 +33,14 @@ const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESUL
 const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 999;
 
 // ------------------------- HELPERS -------------------------
+
+/**
+ * Safe JSON parse to avoid crash on malformed JSON-LD blocks.
+ */
+const safeJsonParse = (input) => {
+    try { return JSON.parse(input); } catch (err) { log.debug(`Bad JSON-LD: ${err.message}`); return null; }
+};
+
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
@@ -51,7 +59,12 @@ const buildStartUrl = (kw, loc, date) => {
 };
 
 const toAbs = (href) => {
-    try { return new URL(href, 'https://www.workopolis.com').href; } catch { return null; }
+    try {
+        const abs = new URL(href, 'https://www.workopolis.com').href;
+        if (!/^https?:/i.test(abs)) return null;
+        return abs;
+    } catch { return null; }
+
 };
 
 const collectJobLinks = ($, baseUrl) => {
@@ -65,7 +78,7 @@ const collectJobLinks = ($, baseUrl) => {
 
     // Filter anchors that look like job detail pages
     // Workopolis uses paths like /jobsearch/viewjob/<id> as well as /job/... in some templates
-    const jobHrefRx = /\/jobsearch\/viewjob\/(?:[-_a-zA-Z0-9%_]+)|\/job(\/|[-_a-zA-Z0-9?=&%]+)|\/(?:en\/)?job[s]?[-_a-zA-Z0-9]*/i;
+    const jobHrefRx = /^\/?(?:en\/)?job(?:s|search\/viewjob)?\/[\-\w%]+/i;
 
     anchorCandidates.forEach((i, a) => {
         try {
@@ -406,7 +419,7 @@ const normalizeCookieHeader = ({ cookies, cookiesJson }) => {
                 for (const item of parsed) {
                     if (typeof item === 'string') parts.push(item.trim());
                     else if (item && typeof item === 'object' && item.name) {
-                        parts.push(`${item.name}=${item.value ?? ''}`);
+                        if (/workopolis\.com/i.test(item.name)) parts.push(`${item.name}=${item.value ?? ''}`);
                     }
                 }
             } else if (parsed && typeof parsed === 'object') {
@@ -513,8 +526,9 @@ const crawler = new CheerioCrawler({
                     const linksToEnqueue = links.slice(0, Math.max(0, remaining));
                     
                     if (linksToEnqueue.length > 0) {
+                        const safeLinks = linksToEnqueue.filter(l => /^https:\/\/(www\.)?workopolis\.com/i.test(l));
                         await enqueueLinks({
-                            urls: linksToEnqueue,
+                            urls: safeLinks,
                             userData: { label: 'DETAIL' }
                         });
                         jobsEnqueued += linksToEnqueue.length;
@@ -544,7 +558,7 @@ const crawler = new CheerioCrawler({
 
             // Continue to next page if needed
             const nextUrl = findNextUrl($, request.url);
-            if (nextUrl) {
+            if (nextUrl && nextUrl !== request.url) {
                 await enqueueLinks({
                     urls: [nextUrl],
                     userData: { label: 'LIST', pageNo: pageNo + 1 }
@@ -598,7 +612,7 @@ const crawler = new CheerioCrawler({
             const jsonLdScript = $('script[type="application/ld+json"]').first().html();
             if (jsonLdScript) {
                 try {
-                    const jsonLd = JSON.parse(jsonLdScript);
+                    const jsonLd = safeJsonParse(jsonLdScript);
                     if (jsonLd['@type'] === 'JobPosting') {
                         crawlerLog.info('Found JSON-LD data. Using it for extraction.');
                         if (jsonLd.hiringOrganization && jsonLd.hiringOrganization.name) {
@@ -723,7 +737,8 @@ const crawler = new CheerioCrawler({
 
             // Final location fallback: look for text nodes near the company name
             if (company && !location) {
-                const companyEl = $(`*:contains('${company}')`).filter((_, el) => $(el).children().length === 0).last();
+                const safeCompany = company.replace(/['"\\]/g, '\\\\$&');
+                const companyEl = $(`*:contains('${safeCompany}')`).filter((_, el) => $(el).children().length === 0).last();
                 if (companyEl.length) {
                     const parentText = cleanTextFromEl(companyEl.parent());
                     const possibleLocation = parentText.replace(company, '').replace(/•|—|-/g, '').trim();
