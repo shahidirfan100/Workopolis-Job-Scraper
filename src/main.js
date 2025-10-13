@@ -483,17 +483,17 @@ const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
-    maxRequestsPerMinute: 60, // Reduced to prevent overwhelming the server
-    requestHandlerTimeoutSecs: 45, // Reduced timeout for faster failure detection
-    navigationTimeoutSecs: 45, // Reduced timeout for faster failure detection
-    maxConcurrency: 3, // Reduced to prevent overwhelming the server
+    maxRequestsPerMinute: 120,
+    requestHandlerTimeoutSecs: 60,
+    navigationTimeoutSecs: 60,
+    maxConcurrency: 5,
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 20, // Reduced session pool size
+        maxPoolSize: 50,
         sessionOptions: {
-            maxUsageCount: 15, // Reduced usage count
-            maxErrorScore: 2, // Reduced error threshold
+            maxUsageCount: 30,
+            maxErrorScore: 3,
         },
     },
     preNavigationHooks: [
