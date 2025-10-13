@@ -6,10 +6,21 @@ import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 
+// Health check variables
+let healthCheckPassed = false;
+let startTime = Date.now();
+
 await Actor.init();
 
-// ------------------------- INPUT -------------------------
+// ------------------------- INPUT VALIDATION -------------------------
 const input = await Actor.getInput() ?? {};
+log.info('Received input:', input);
+
+// Validate input
+if (!input || typeof input !== 'object') {
+    throw new Error('Invalid input: Input must be an object');
+}
+
 const {
     keyword = '',
     location = '',
@@ -29,8 +40,27 @@ const {
     proxyConfiguration,
 } = input;
 
+// Validate required fields
+if (!keyword && !location && !startUrl && !url && (!startUrls || startUrls.length === 0)) {
+    throw new Error('Missing required input: Please provide either keyword, location, startUrl, url, or startUrls');
+}
+
 const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : Number.MAX_SAFE_INTEGER;
 const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 999;
+
+// Validate posted_date
+const validPostedDates = ['anytime', '24h', '7d', '30d'];
+if (!validPostedDates.includes(posted_date)) {
+    throw new Error(`Invalid posted_date: ${posted_date}. Valid values are: ${validPostedDates.join(', ')}`);
+}
+
+// Health check: Set timeout to ensure completion within 5 minutes (290 seconds to be safe)
+setTimeout(() => {
+    if (!healthCheckPassed) {
+        log.error('Actor is taking too long to complete. Exiting to meet 5-minute requirement.');
+        process.exit(1);
+    }
+}, 290000); // 4 minutes 50 seconds
 
 // ------------------------- HELPERS -------------------------
 
@@ -453,17 +483,17 @@ const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
-    maxRequestsPerMinute: 120,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 60,
-    maxConcurrency: 5,
+    maxRequestsPerMinute: 60, // Reduced to prevent overwhelming the server
+    requestHandlerTimeoutSecs: 45, // Reduced timeout for faster failure detection
+    navigationTimeoutSecs: 45, // Reduced timeout for faster failure detection
+    maxConcurrency: 3, // Reduced to prevent overwhelming the server
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 50,
+        maxPoolSize: 20, // Reduced session pool size
         sessionOptions: {
-            maxUsageCount: 30,
-            maxErrorScore: 3,
+            maxUsageCount: 15, // Reduced usage count
+            maxErrorScore: 2, // Reduced error threshold
         },
     },
     preNavigationHooks: [
@@ -862,10 +892,44 @@ const crawler = new CheerioCrawler({
     // Add failure handler for better error recovery
     failedRequestHandler: async ({ request }, error) => {
         log.error(`Request ${request.url} failed: ${error.message}`);
+        // Log additional error details for debugging
+        log.error(`Error stack: ${error.stack}`);
+        
+        // Track failed requests to ensure we don't get stuck
+        if (request.userData && request.userData.label === 'DETAIL') {
+            // For detail pages, we just log the error but continue
+            log.warning(`Failed to scrape job detail page: ${request.url}`);
+        } else if (request.userData && request.userData.label === 'LIST') {
+            // For list pages, log error and continue
+            log.warning(`Failed to scrape job list page: ${request.url}`);
+        }
     },
 });
 
-await crawler.run(initialUrls.map(u => ({ url: u, userData: { label: 'LIST', pageNo: 1 } })));
-log.info(`✓ Scraping completed. Total jobs scraped: ${jobsScraped}/${RESULTS_WANTED} | Jobs enqueued: ${jobsEnqueued}`);
+try {
+    await crawler.run(initialUrls.map(u => ({ url: u, userData: { label: 'LIST', pageNo: 1 } })));
+    log.info(`✓ Scraping completed. Total jobs scraped: ${jobsScraped}/${RESULTS_WANTED} | Jobs enqueued: ${jobsEnqueued}`);
+    
+    // Health check: Mark as passed if we reach this point
+    healthCheckPassed = true;
+    
+    // Check if we got any results
+    if (jobsScraped === 0) {
+        log.warning('No jobs were scraped. This might indicate an issue with the search or the website structure.');
+        // Still exit successfully as this isn't an error condition
+    }
+    
+    // Log execution time
+    const executionTime = Date.now() - startTime;
+    log.info(`Actor execution completed in ${Math.round(executionTime/1000)} seconds.`);
+    
+} catch (error) {
+    log.error(`Actor failed with error: ${error.message}`);
+    log.error(`Stack trace: ${error.stack}`);
+    throw error; // Re-throw to ensure Actor exits with error status
+} finally {
+    // Ensure health check is marked as passed to prevent timeout
+    healthCheckPassed = true;
+}
 
 await Actor.exit();
