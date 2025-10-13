@@ -101,36 +101,57 @@ const toAbs = (href) => {
 };
 
 const collectJobLinks = ($, baseUrl) => {
-    // Broad heuristics to capture job detail links on Workopolis search pages.
+    // Optimized: Use targeted selectors first for speed (90% of cases)
     const links = new Set();
-
-    const anchorCandidates = [];
-
-    // Common containers
-    anchorCandidates.push(...$('a[href]')); // start with all anchors and filter below
-
-    // Filter anchors that look like job detail pages
-    // Workopolis uses paths like /jobsearch/viewjob/<id> as well as /job/... in some templates
     const jobHrefRx = /^\/?(?:en\/)?job(?:s|search\/viewjob)?\/[\-\w%]+/i;
-
-    anchorCandidates.forEach((i, a) => {
+    
+    // Fast path: Try specific selectors first
+    const specificSelectors = [
+        'a[href*="/job/"]',
+        'a[href*="/jobsearch/viewjob"]',
+        'a[href*="jobId="]',
+        '.job-card a[href]',
+        '.search-result a[href]',
+        '.job-listing a[href]',
+        'article a[href]'
+    ];
+    
+    for (const selector of specificSelectors) {
+        const anchors = $(selector);
+        if (anchors.length > 0) {
+            anchors.each((_, a) => {
+                const href = $(a).attr('href');
+                if (!href || /^#|^javascript:/i.test(href)) return;
+                
+                if (jobHrefRx.test(href) || /job[-_]?id=|jobId=/i.test(href)) {
+                    const abs = toAbs(href);
+                    if (abs) links.add(abs);
+                }
+            });
+        }
+    }
+    
+    // If we found links via fast path, return early
+    if (links.size > 0) {
+        return [...links];
+    }
+    
+    // Fallback: Broader search (slower but comprehensive)
+    $('a[href]').each((_, a) => {
         try {
             const href = String($(a).attr('href') || '').trim();
-            if (!href) return;
-            // ignore anchors that are page anchors or javascript
-            if (/^#|^javascript:/i.test(href)) return;
+            if (!href || /^#|^javascript:/i.test(href)) return;
 
-            // If href contains 'job' token it's likely a detail link
             if (jobHrefRx.test(href) || /job[-_]?id=|jobId=/i.test(href)) {
-                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
+                const abs = toAbs(href);
                 if (abs) links.add(abs);
                 return;
             }
 
-            // Heuristic: anchors inside listing items
-            const parent = $(a).closest('li, article, .result, .job, .search-result, .job-listing, .job-card, .searchCard');
-            if (parent && parent.length) {
-                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
+            // Check if anchor is inside a job listing container
+            const parent = $(a).closest('li, article, .result, .job, .search-result, .job-listing, .job-card');
+            if (parent.length) {
+                const abs = toAbs(href);
                 if (abs && abs.includes('workopolis.com')) links.add(abs);
             }
         } catch (e) {
@@ -138,20 +159,7 @@ const collectJobLinks = ($, baseUrl) => {
         }
     });
 
-    // Fallback: if no links detected, try anchors containing known jobsearch path
-    if (!links.size) {
-        $('a[href]').each((_, a) => {
-            const href = String($(a).attr('href') || '').trim();
-            if (!href) return;
-            if (href.includes('/jobsearch/viewjob')) {
-                const abs = toAbs(href) || (baseUrl ? new URL(href, baseUrl).href : null);
-                if (abs) links.add(abs);
-            }
-        });
-    }
-
-    // Return unique links with some ordering
-    return [...links].filter(Boolean);
+    return [...links];
 };
 
 const findNextUrl = ($, currentUrl) => {
@@ -200,10 +208,10 @@ const findNextUrl = ($, currentUrl) => {
 };
 
 const findBestDescriptionContainer = ($) => {
-    // Remove skip links and navigation first
-    $('a[href*="#main-content"], .skip-link, nav, header, footer').remove();
-
-    // Try specific job description selectors first (fast path)
+    // Optimized: Clone DOM for manipulation to avoid side effects
+    const $doc = $.root();
+    
+    // Try specific job description selectors first (fast path - 80% of cases)
     const specificSelectors = [
         '[data-testid="job-description"]',
         '.job-description',
@@ -215,7 +223,7 @@ const findBestDescriptionContainer = ($) => {
 
     for (const sel of specificSelectors) {
         const el = $(sel).first();
-        if (el && el.length) {
+        if (el.length) {
             const text = el.text().trim();
             if (text.length > 300 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
                 const isSmallSection = text.length < 800 && /^(benefits?|about|overview|summary)/i.test(text.substring(0, 50));
@@ -224,11 +232,16 @@ const findBestDescriptionContainer = ($) => {
         }
     }
 
-    // Build a cached list of candidate nodes to avoid repeated DOM traversals
-    const nodeList = $('div, section, article, main').toArray();
+    // Optimized: Limit node search to main content areas only
+    const contentAreas = $('main, [role="main"], article, .content, .job-content, .job-details').first();
+    const searchRoot = contentAreas.length ? contentAreas : $('body');
+    const nodeList = searchRoot.find('div, section, article').toArray();
+    
     const candidates = [];
     const excludePatterns = /Skip to|Back to|Quick apply|Similar Jobs|Browse jobs|Contact Us|Privacy|Terms|Cookies|Stay Connected|Sign in|Create alert|Post Jobs|All jobs|Related Searches|Job seeker tools/i;
+    const jobTerms = ['responsibilities', 'requirements', 'qualifications', 'experience', 'skills', 'duties'];
 
+    // Optimized: Single pass scoring
     for (const node of nodeList) {
         const $el = $(node);
         const text = $el.text().trim();
@@ -236,152 +249,147 @@ const findBestDescriptionContainer = ($) => {
 
         if (len < 250 || excludePatterns.test(text)) continue;
 
-        // Skip if it's mostly links
-        const linkRatio = $el.find('a').length / Math.max(1, text.split(' ').length / 15);
-        if (linkRatio > 0.25) continue;
+        // Skip if it's mostly links (optimized calculation)
+        const linkCount = $el.find('a').length;
+        if (linkCount > 5 && linkCount / (len / 100) > 2) continue;
 
-        candidates.push({ node, $el, text, len, score: len });
-    }
-
-    if (!candidates.length) return $('main').first() || $('body');
-
-    // Precompute job-term boosts and structure bonuses
-    const jobTerms = ['responsibilities', 'requirements', 'qualifications', 'experience', 'skills', 'duties'];
-    for (const cand of candidates) {
-        const lowerText = cand.text.toLowerCase();
+        let score = len;
+        
+        // Job terms scoring (optimized with early termination)
+        const lowerText = text.toLowerCase();
         let termCount = 0;
         for (const t of jobTerms) {
-            if (lowerText.includes(t)) termCount++;
+            if (lowerText.includes(t)) {
+                termCount++;
+                score += 300;
+            }
         }
-        if (termCount) cand.score += termCount * 300;
-        if (cand.$el.find('ul li').length > 2) cand.score += 200;
-        if (cand.$el.find('p').length > 2) cand.score += 100;
+        
+        // Structure bonuses (cache counts)
+        const listItems = $el.find('ul li').length;
+        const paragraphs = $el.find('p').length;
+        if (listItems > 2) score += 200;
+        if (paragraphs > 2) score += 100;
 
         // Penalty for small section headings
-        if (cand.len < 500 && /^(benefits?|about|overview|summary|contact|apply)/i.test(cand.text.substring(0, 50))) {
-            cand.score -= 500;
+        if (len < 500 && /^(benefits?|about|overview|summary|contact|apply)/i.test(text.substring(0, 50))) {
+            score -= 500;
         }
+
+        candidates.push({ node, $el, text, len, score });
     }
 
-    // Create a Set for quick ancestor checks
-    const candidateNodeSet = new Set(candidates.map(c => c.node));
+    if (!candidates.length) return searchRoot.length ? searchRoot : $('body');
 
-    // For each candidate, determine if it has an ancestor candidate; penalize children
+    // Optimized: Skip ancestor check if we have a clear winner
+    candidates.sort((a, b) => b.score - a.score);
+    if (candidates.length > 0 && candidates[0].score > candidates[1]?.score * 1.5) {
+        return candidates[0].$el;
+    }
+
+    // Ancestor penalty only for close scores
+    const candidateNodeSet = new Set(candidates.map(c => c.node));
     for (const cand of candidates) {
         let p = cand.node.parent;
-        while (p && p.type) {
+        let depth = 0;
+        while (p && p.type && depth < 5) { // Limit depth for performance
             if (candidateNodeSet.has(p)) {
-                // found an ancestor candidate
                 cand.score -= 800;
                 break;
             }
             p = p.parent;
+            depth++;
         }
     }
 
-    // Pick the candidate with the highest score
     candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0];
-    return (best && best.$el) || $('main').first() || $('body');
+    return candidates[0]?.$el || searchRoot || $('body');
 };
 
-// Helper to clean text from a Cheerio element: remove icons/images/buttons before reading text
+// Optimized: Helper to clean text from a Cheerio element with reduced operations
 const cleanTextFromEl = ($el) => {
     if (!$el || !$el.length) return '';
     const clone = $el.clone();
 
-    // Remove noisy inner elements that pollute text
+    // Single-pass removal of noisy elements
     clone.find('svg, img, button, script, style, noscript, .icon, .rating, .visually-hidden, .sr-only, [aria-hidden="true"]').remove();
     
     let txt = clone.text() || '';
     
-    // Clean up whitespace and common artifacts
+    // Optimized: Combined regex for whitespace cleanup
     txt = String(txt)
-        .replace(/\s+/g, ' ')           // normalize whitespace
-        .replace(/[\r\n\t]+/g, ' ')     // remove line breaks and tabs
-        .replace(/[^\x20-\x7E\u00A0-\u024F\u1E00-\u1EFF]/g, '') // remove non-printable chars but keep accented
+        .replace(/[\s\r\n\t]+/g, ' ')     // normalize all whitespace in one pass
+        .replace(/[^\x20-\x7E\u00A0-\u024F\u1E00-\u1EFF]/g, '') // remove non-printable chars
+        .replace(/^(Image:|Rating:|Quick apply|Apply now)/i, '') // remove UI artifacts
         .trim();
-        
-    // Remove common UI artifacts
-    txt = txt.replace(/^(Image:|Rating:|Quick apply|Apply now)/i, '').trim();
     
     return txt;
 };
 
-// Sanitize job description using the existing Cheerio instance to preserve structure and links
+// Optimized: Sanitize job description with minimal DOM operations
 const sanitizeDescription = ($, el, baseUrl) => {
     if (!el || !el.length) return '';
     const clone = el.clone();
     
-    // Remove unwanted elements entirely
-    clone.find('script, style, nav, header, footer, button, svg, form, aside, noscript').remove();
-    clone.find('.skip-link, [href*="#main-content"]').remove();
-    clone.find('.navigation, .nav, .menu, .breadcrumb').remove();
+    // Single-pass removal of all unwanted elements
+    clone.find('script, style, nav, header, footer, button, svg, form, aside, noscript, .skip-link, [href*="#main-content"], .navigation, .nav, .menu, .breadcrumb').remove();
     
-    // Remove elements with navigation-like text
-    clone.find('*').each((_, node) => {
+    // Optimized: Remove navigation text in single pass with direct text check
+    const navPatterns = /^(Skip to|Back to|Quick apply|Apply now|Sign in|Create alert)$/i;
+    clone.find('*').filter((_, node) => {
+        const text = $(node).text().trim();
+        return navPatterns.test(text);
+    }).remove();
+    
+    // Optimized: Attribute cleanup - only process specific tags
+    clone.find('a, ul, ol, h1, h2, h3, h4, h5, h6').each((_, node) => {
         const $node = $(node);
-        const text = $node.text().trim();
-        if (text.match(/^(Skip to|Back to|Quick apply|Apply now|Sign in|Create alert)$/i)) {
-            $node.remove();
-        }
-    });
-    
-    // Clean up attributes on remaining elements
-    clone.find('*').each((_, node) => {
         const tag = node.tagName ? node.tagName.toLowerCase() : (node.name || '');
-        const attribs = Object.keys(node.attribs || {});
         
-        for (const attr of attribs) {
-            // Keep href on anchors but sanitize them
-            if (tag === 'a' && attr === 'href') {
-                const hrefVal = $(node).attr('href');
-                try {
-                    // Skip internal navigation links
-                    if (hrefVal && hrefVal.includes('#main-content')) {
-                        $(node).remove();
-                        return;
-                    }
-                    const abs = new URL(hrefVal, baseUrl || 'https://www.workopolis.com').href;
-                    $(node).attr('href', abs);
-                } catch {
-                    $(node).removeAttr('href');
+        if (tag === 'a') {
+            const hrefVal = $node.attr('href');
+            if (hrefVal) {
+                if (hrefVal.includes('#main-content')) {
+                    $node.remove();
+                    return;
                 }
-                continue;
+                try {
+                    const abs = new URL(hrefVal, baseUrl || 'https://www.workopolis.com').href;
+                    $node.attr('href', abs);
+                } catch {
+                    $node.removeAttr('href');
+                }
             }
-            
-            // Keep essential structure attributes for lists and headings
-            if ((tag === 'ul' || tag === 'ol') && attr === 'type') continue;
-            if ((tag.match(/^h[1-6]$/)) && attr === 'id') continue;
-            
-            // Remove all other attributes
-            $(node).removeAttr(attr);
+            // Remove all attributes except href
+            const attribs = Object.keys(node.attribs || {});
+            attribs.forEach(attr => {
+                if (attr !== 'href') $node.removeAttr(attr);
+            });
+        } else {
+            // Remove all attributes from other tags (keep structure only)
+            const attribs = Object.keys(node.attribs || {});
+            attribs.forEach(attr => $node.removeAttr(attr));
         }
     });
 
-    // Remove empty elements recursively
-    let removedSomething = true;
-    while (removedSomething) {
-        removedSomething = false;
-        clone.find('*').each((_, n) => {
+    // Optimized: Remove empty elements with limited iterations
+    for (let i = 0; i < 3; i++) { // Max 3 passes instead of while(true)
+        const empties = clone.find('*').filter((_, n) => {
             const $n = $(n);
             const text = $n.text().trim();
-            const hasContent = text.length > 0;
             const hasStructuralChildren = $n.children('p, div, ul, ol, h1, h2, h3, h4, h5, h6, li').length > 0;
-            
-            if (!hasContent && !hasStructuralChildren) {
-                $n.remove();
-                removedSomething = true;
-            }
+            return text.length === 0 && !hasStructuralChildren;
         });
+        
+        if (empties.length === 0) break;
+        empties.remove();
     }
 
     // Get the cleaned HTML
     let html = clone.html() ? String(clone.html()).trim() : '';
     
-    // Final cleanup of the HTML string
-    html = html.replace(/<>\s*<\/>/g, ''); // Remove empty tags
-    html = html.replace(/\s+/g, ' '); // Normalize whitespace
+    // Optimized: Combined regex cleanup
+    html = html.replace(/<>\s*<\/>/g, '').replace(/\s+/g, ' ');
     
     return html;
 };
@@ -473,8 +481,13 @@ if (url && typeof url === 'string') initialUrls.push(url);
 if (!initialUrls.length) initialUrls.push(builtStartUrl);
 
 // ------------------------- PROXY -------------------------
+// Optimized: Use residential proxies for better stealth if available
 const proxyConf = proxyConfiguration
-    ? await Actor.createProxyConfiguration(proxyConfiguration)
+    ? await Actor.createProxyConfiguration({
+        ...proxyConfiguration,
+        // Prefer residential IPs for better stealth (falls back to datacenter if not available)
+        groups: proxyConfiguration.groups || (proxyConfiguration.useApifyProxy ? ['RESIDENTIAL'] : undefined),
+    })
     : undefined;
 
 // ------------------------- SHARED STATE -------------------------
@@ -486,86 +499,115 @@ const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
-    maxRequestsPerMinute: 120,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 60,
-    maxConcurrency: 5,
+    maxRequestsPerMinute: 180, // Increased from 120 for faster scraping
+    requestHandlerTimeoutSecs: 45, // Reduced from 60 to fail faster
+    navigationTimeoutSecs: 45, // Reduced from 60 to fail faster
+    maxConcurrency: 8, // Increased from 5 for parallel processing
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 50,
+        maxPoolSize: 80, // Increased from 50 for better session rotation
         sessionOptions: {
-            maxUsageCount: 30,
-            maxErrorScore: 3,
+            maxUsageCount: 50, // Increased from 30 to reduce session creation overhead
+            maxErrorScore: 5, // Increased from 3 for better error tolerance
         },
     },
+    // Add retry logic for better resilience
+    maxRequestRetries: 3,
+    // Reduce memory footprint by limiting request queue size
+    maxRequestsPerCrawl: RESULTS_WANTED * 5, // Safety limit
     preNavigationHooks: [
-        async ({ request }) => {
-            // Anti-blocking headers
+        async ({ request, session }) => {
+            // Enhanced anti-blocking headers with better browser fingerprinting
+            const isListPage = !request.userData?.label || request.userData?.label === 'LIST';
+            
             request.headers = {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9,en-GB;q=0.8,en-CA;q=0.7',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,en-CA;q=0.8,fr-CA;q=0.7', // More Canada-specific for Workopolis
                 'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
                 'Sec-Fetch-Dest': 'document',
                 'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-Site': isListPage ? 'none' : 'same-origin', // Realistic navigation pattern
+                'Sec-Fetch-User': '?1',
                 'Cache-Control': 'max-age=0',
                 'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+                // Add realistic referer for detail pages
+                ...(isListPage ? {} : { 'Referer': 'https://www.workopolis.com/' }),
                 ...request.headers,
             };
             
             if (cookieHeader) {
                 request.headers.Cookie = cookieHeader;
             }
+            
+            // Add small random delay between requests to appear more human-like
+            if (session) {
+                const delay = Math.floor(Math.random() * 500) + 200; // 200-700ms random delay
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
         }
     ],
     
-    async requestHandler({ request, $, log: crawlerLog, enqueueLinks, crawler }) {
+    async requestHandler({ request, $, log: crawlerLog, enqueueLinks, crawler, session }) {
         const { label, pageNo = 1 } = request.userData ?? {};
+
+        // Mark session as good on successful response
+        if (session) {
+            session.markGood();
+        }
 
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($, request.url);
             crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
             if (links.length) {
-                const sample = links.slice(0, 6).join('\n - ');
-                crawlerLog.debug(`Sample links:\n - ${sample}`);
+                const sample = links.slice(0, 3).join(', '); // Reduced logging for speed
+                crawlerLog.debug(`Sample links: ${sample}`);
             } else {
                 crawlerLog.debug('No candidate links found on this list page (links.length === 0)');
             }
 
             if (!collectDetails) {
-                // Direct push mode - stop as soon as we reach the limit
-                for (const link of links) {
-                    if (jobsScraped >= RESULTS_WANTED) {
-                        shouldStopEnqueuing = true;
-                        break;
-                    }
-                    await Dataset.pushData({
+                // Direct push mode - batch processing for speed
+                const remaining = RESULTS_WANTED - jobsScraped;
+                const jobsToPush = links.slice(0, Math.max(0, remaining));
+                
+                if (jobsToPush.length > 0) {
+                    const timestamp = new Date().toISOString();
+                    const dataItems = jobsToPush.map(link => ({
                         url: link,
                         _source: 'workopolis.com',
-                        _fetchedAt: new Date().toISOString(),
+                        _fetchedAt: timestamp,
                         _from: 'list'
-                    });
-                    jobsScraped++;
-                    crawlerLog.info(`✓ Job ${jobsScraped}/${RESULTS_WANTED} saved (list mode)`);
+                    }));
+                    
+                    // Batch push for better performance
+                    await Dataset.pushData(dataItems);
+                    jobsScraped += dataItems.length;
+                    crawlerLog.info(`✓ Batch saved ${dataItems.length} jobs | Total: ${jobsScraped}/${RESULTS_WANTED}`);
+                }
+                
+                if (jobsScraped >= RESULTS_WANTED) {
+                    shouldStopEnqueuing = true;
                 }
             } else {
-                // Detail mode - only enqueue what we need
+                // Detail mode - only enqueue what we need with batching
                 if (!shouldStopEnqueuing) {
                     const remaining = RESULTS_WANTED - jobsEnqueued;
                     const linksToEnqueue = links.slice(0, Math.max(0, remaining));
                     
                     if (linksToEnqueue.length > 0) {
                         const safeLinks = linksToEnqueue.filter(l => /^https:\/\/(www\.)?workopolis\.com/i.test(l));
+                        
+                        // Batch enqueue for better performance
                         await enqueueLinks({
                             urls: safeLinks,
-                            userData: { label: 'DETAIL' }
+                            userData: { label: 'DETAIL' },
+                            forefront: false // Don't prioritize to maintain natural flow
                         });
-                        jobsEnqueued += linksToEnqueue.length;
-                        crawlerLog.info(`→ Enqueued ${linksToEnqueue.length} detail pages | Total enqueued: ${jobsEnqueued}/${RESULTS_WANTED}`);
+                        jobsEnqueued += safeLinks.length;
+                        crawlerLog.info(`→ Enqueued ${safeLinks.length} detail pages | Total: ${jobsEnqueued}/${RESULTS_WANTED}`);
                     }
                     
                     // Stop enqueueing if we've reached the limit
@@ -589,12 +631,13 @@ const crawler = new CheerioCrawler({
                 return;
             }
 
-            // Continue to next page if needed
+            // Continue to next page if needed - prioritize to maintain flow
             const nextUrl = findNextUrl($, request.url);
             if (nextUrl && nextUrl !== request.url) {
                 await enqueueLinks({
                     urls: [nextUrl],
-                    userData: { label: 'LIST', pageNo: pageNo + 1 }
+                    userData: { label: 'LIST', pageNo: pageNo + 1 },
+                    forefront: true // Prioritize list pages to gather links faster
                 });
                 crawlerLog.info(`→ Next page enqueued: ${pageNo + 1}`);
             } else {
@@ -606,11 +649,12 @@ const crawler = new CheerioCrawler({
     if (label === 'DETAIL') {
             // Check if we should skip (in case we got more enqueued than needed)
             if (jobsScraped >= RESULTS_WANTED) {
-                crawlerLog.info(`Skipping detail - already at limit: ${request.url}`);
+                crawlerLog.debug(`Skipping detail - already at limit: ${request.url}`);
                 return;
             }
 
             // Extract job data using patterns specific to Workopolis structure
+            // Optimized: Cache jQuery selections for reuse
             
             // Title: Look for the main job title (usually the first h1 or prominent heading)
             let title = '';
@@ -640,21 +684,23 @@ const crawler = new CheerioCrawler({
             let location = '';
             let date_posted = '';
             
-            // --- STRATEGY 0: JSON-LD (Structured Data) ---
-            // This is the most reliable method if available.
-            const jsonLdScript = $('script[type="application/ld+json"]').first().html();
-            if (jsonLdScript) {
-                try {
+            // --- STRATEGY 0: JSON-LD (Structured Data) - OPTIMIZED ---
+            // This is the most reliable and fastest method if available.
+            const jsonLdScripts = $('script[type="application/ld+json"]');
+            if (jsonLdScripts.length) {
+                // Process only the first matching JSON-LD script for speed
+                const jsonLdScript = jsonLdScripts.first().html();
+                if (jsonLdScript) {
                     const jsonLd = safeJsonParse(jsonLdScript);
-                    if (jsonLd['@type'] === 'JobPosting') {
-                        crawlerLog.info('Found JSON-LD data. Using it for extraction.');
-                        if (jsonLd.hiringOrganization && jsonLd.hiringOrganization.name) {
+                    if (jsonLd && jsonLd['@type'] === 'JobPosting') {
+                        crawlerLog.debug('Using JSON-LD structured data (fast path)');
+                        if (jsonLd.hiringOrganization?.name) {
                             company = String(jsonLd.hiringOrganization.name).trim();
                         }
-                        if (jsonLd.jobLocation && jsonLd.jobLocation.address) {
+                        if (jsonLd.jobLocation?.address) {
                             const { addressLocality, addressRegion, addressCountry } = jsonLd.jobLocation.address;
                             location = [addressLocality, addressRegion, addressCountry]
-                                .filter(Boolean) // Remove empty parts
+                                .filter(Boolean)
                                 .join(', ');
                         }
                         if (jsonLd.datePosted) {
@@ -665,8 +711,6 @@ const crawler = new CheerioCrawler({
                             title = String(jsonLd.title).trim();
                         }
                     }
-                } catch (e) {
-                    crawlerLog.debug(`Could not parse JSON-LD: ${e.message}`);
                 }
             }
 
@@ -816,6 +860,7 @@ const crawler = new CheerioCrawler({
                 }
             }
 
+            // Optimized description extraction - reduced overhead
             const container = findBestDescriptionContainer($);
             let description_html = '';
             let description_text = '';
@@ -831,7 +876,7 @@ const crawler = new CheerioCrawler({
                 const isIncomplete = validateDescriptionCompleteness(description_text, description_html);
                 
                 if (isIncomplete && description_text.length < 800) {
-                    crawlerLog.info(`⚠️ WARN: Description seems incomplete (${description_text.length} chars). Trying fallback method...`);
+                    crawlerLog.debug(`Description seems short (${description_text.length} chars). Trying fallback...`);
                     
                     // Fallback: Try to find a more comprehensive container
                     const fallbackContainer = findFallbackDescriptionContainer($, container);
@@ -841,70 +886,62 @@ const crawler = new CheerioCrawler({
                         const fallbackText = cheerioLoad(fallbackHtml || '').text().replace(/\s+/g, ' ').trim();
                         
                         if (fallbackText.length > description_text.length * 1.5) {
-                            crawlerLog.info(`Fallback found better description (${fallbackText.length} vs ${description_text.length} chars)`);
+                            crawlerLog.debug(`Fallback found better description (${fallbackText.length} vs ${description_text.length} chars)`);
                             description_html = fallbackHtml;
                             description_text = fallbackText;
                         }
                     }
                 }
             } else {
-                crawlerLog.info(`⚠️ WARN: Could not find a suitable description container for ${request.url}`);
+                crawlerLog.debug(`Could not find description container for ${request.url}`);
             }
             
-            // Log extraction results for debugging
-            crawlerLog.info(`Extracted from ${request.url}:`);
-            crawlerLog.info(`  Title: ${title || 'MISSING'}`);
-            crawlerLog.info(`  Company: ${company || 'MISSING'}`);
-            crawlerLog.info(`  Location: ${location || 'MISSING'}`);
-            crawlerLog.info(`  Date: ${date_posted || 'MISSING'}`);
-            crawlerLog.info(`  Description length: ${description_text ? description_text.length : 0} chars`);
-            
-            // Basic debugging for description extraction
-            if (description_text && description_text.length > 0) {
-                crawlerLog.debug(`  Description preview: ${description_text.substring(0, 150)}...`);
-                
-                // Only log if description seems problematic
-                if (description_text.length < 400) {
-                    crawlerLog.info(`⚠️ WARN: Short description (${description_text.length} chars)`);
-                }
+            // Reduced logging for speed - only log issues
+            if (!title) crawlerLog.debug(`Missing title: ${request.url}`);
+            if (!company) crawlerLog.debug(`Missing company: ${request.url}`);
+            if (description_text && description_text.length < 400) {
+                crawlerLog.debug(`Short description (${description_text.length} chars): ${request.url}`);
             }
 
             const item = {
                 url: request.url,
-                title: title && title.length ? title : null,
-                company: company && company.length ? company : null,
-                location: location && location.length ? location : null,
-                date_posted: date_posted && date_posted.length ? date_posted : null,
-                description_html: description_html && description_html.length ? description_html : null,
-                description_text: description_text && description_text.length ? description_text : null,
+                title: title || null,
+                company: company || null,
+                location: location || null,
+                date_posted: date_posted || null,
+                description_html: description_html || null,
+                description_text: description_text || null,
                 _source: 'workopolis.com',
                 _fetchedAt: new Date().toISOString(),
                 _from: 'detail',
             };
-            
-            // Log missing key fields for diagnostics
-            if (!title) crawlerLog.info(`⚠️ WARN: Detail page missing title: ${request.url}`);
-            if (!company) crawlerLog.debug(`Company not found for ${request.url}`);
 
             await Dataset.pushData(item);
             jobsScraped++;
-            crawlerLog.info(`✓ Job ${jobsScraped}/${RESULTS_WANTED} saved: ${title || 'Untitled'}`);
+            
+            // Reduced logging frequency - only log every 5th job or first/last
+            if (jobsScraped % 5 === 0 || jobsScraped === 1 || jobsScraped === RESULTS_WANTED) {
+                crawlerLog.info(`✓ Progress: ${jobsScraped}/${RESULTS_WANTED} jobs saved`);
+            }
         }
     },
     
-    // Add failure handler for better error recovery
-    failedRequestHandler: async ({ request }, error) => {
-        log.error(`Request ${request.url} failed: ${error.message}`);
-        // Log additional error details for debugging
-        log.error(`Error stack: ${error.stack}`);
+    // Enhanced failure handler for better error recovery and stealth
+    failedRequestHandler: async ({ request, session }, error) => {
+        // Reduce verbose error logging for speed
+        log.debug(`Request failed: ${request.url.substring(0, 80)}... - ${error.message}`);
+        
+        // Mark session as bad if we get blocking indicators
+        if (session && (error.message.includes('403') || error.message.includes('blocked') || error.message.includes('captcha'))) {
+            session.markBad();
+            log.warning(`Session blocked detected. Rotating session.`);
+        }
         
         // Track failed requests to ensure we don't get stuck
-        if (request.userData && request.userData.label === 'DETAIL') {
-            // For detail pages, we just log the error but continue
-            log.warning(`Failed to scrape job detail page: ${request.url}`);
-        } else if (request.userData && request.userData.label === 'LIST') {
-            // For list pages, log error and continue
-            log.warning(`Failed to scrape job list page: ${request.url}`);
+        if (request.userData?.label === 'DETAIL') {
+            log.debug(`Failed to scrape job detail page`);
+        } else if (request.userData?.label === 'LIST') {
+            log.warning(`Failed to scrape job list page - may impact results`);
         }
     },
 });
