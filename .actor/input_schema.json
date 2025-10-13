@@ -1,6 +1,6 @@
 {
   "title": "Workopolis Jobs Scraper",
-  "description": "Scrape jobs from Workopolis.com listings. Provide keyword/location or a Workopolis search URL. Actor paginates and optionally scrapes detail pages.",
+  "description": "Scrape jobs from Workopolis.com listings. Provide either keyword/location OR a Workopolis search URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -83,6 +83,6 @@
       "editor": "textarea"
     }
   },
-  "required": ["keyword"],
+  "required": [],
   "additionalProperties": false
 }

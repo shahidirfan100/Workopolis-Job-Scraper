@@ -40,9 +40,12 @@ const {
     proxyConfiguration,
 } = input;
 
-// Validate required fields
-if (!keyword && !location && !startUrl && !url && (!startUrls || startUrls.length === 0)) {
-    throw new Error('Missing required input: Please provide either keyword, location, startUrl, url, or startUrls');
+// Validate required fields - user must provide either keyword/location or a URL
+const hasSearchTerms = keyword || location;
+const hasUrls = startUrl || url || (startUrls && startUrls.length > 0);
+
+if (!hasSearchTerms && !hasUrls) {
+    throw new Error('Missing required input: Please provide either keyword/location or a Workopolis URL (startUrl, url, or startUrls)');
 }
 
 const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : Number.MAX_SAFE_INTEGER;
