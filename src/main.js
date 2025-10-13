@@ -213,11 +213,13 @@ const findBestDescriptionContainer = ($) => {
     
     // Try specific job description selectors first (fast path - 80% of cases)
     const specificSelectors = [
+        '[data-testid="viewJobBodyContainer"]', // Workopolis-specific container
         '[data-testid="job-description"]',
         '.job-description',
         '.viewjob-description',
         '[data-qa="job-description"]',
         '.full-job-description',
+        '[data-testid="viewJobBodyJobFullDescriptionContent"]', // Full description content
         '.description',
     ];
 
@@ -225,9 +227,10 @@ const findBestDescriptionContainer = ($) => {
         const el = $(sel).first();
         if (el.length) {
             const text = el.text().trim();
-            if (text.length > 300 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
-                const isSmallSection = text.length < 800 && /^(benefits?|about|overview|summary)/i.test(text.substring(0, 50));
-                if (!isSmallSection) return el;
+            // FIXED: Reduced minimum length check and removed small section filter
+            // We want to capture all content, even if it's shorter
+            if (text.length > 100 && !text.match(/^(Skip to|Back to|Quick apply)/i)) {
+                return el;
             }
         }
     }
@@ -341,13 +344,20 @@ const sanitizeDescription = ($, el, baseUrl) => {
         return navPatterns.test(text);
     }).remove();
     
-    // Optimized: Attribute cleanup - only process specific tags
-    clone.find('a, ul, ol, h1, h2, h3, h4, h5, h6').each((_, node) => {
+    // FIXED: Remove ALL attributes from ALL elements (except href on anchors)
+    clone.find('*').each((_, node) => {
         const $node = $(node);
         const tag = node.tagName ? node.tagName.toLowerCase() : (node.name || '');
+        const attribs = Object.keys(node.attribs || {});
         
         if (tag === 'a') {
+            // For anchors, keep only href after sanitizing
             const hrefVal = $node.attr('href');
+            
+            // Remove all attributes first
+            attribs.forEach(attr => $node.removeAttr(attr));
+            
+            // Then add back sanitized href if valid
             if (hrefVal) {
                 if (hrefVal.includes('#main-content')) {
                     $node.remove();
@@ -357,17 +367,11 @@ const sanitizeDescription = ($, el, baseUrl) => {
                     const abs = new URL(hrefVal, baseUrl || 'https://www.workopolis.com').href;
                     $node.attr('href', abs);
                 } catch {
-                    $node.removeAttr('href');
+                    // Invalid URL, leave no href
                 }
             }
-            // Remove all attributes except href
-            const attribs = Object.keys(node.attribs || {});
-            attribs.forEach(attr => {
-                if (attr !== 'href') $node.removeAttr(attr);
-            });
         } else {
-            // Remove all attributes from other tags (keep structure only)
-            const attribs = Object.keys(node.attribs || {});
+            // For all other elements, remove ALL attributes (class, data-*, style, etc.)
             attribs.forEach(attr => $node.removeAttr(attr));
         }
     });
@@ -377,7 +381,7 @@ const sanitizeDescription = ($, el, baseUrl) => {
         const empties = clone.find('*').filter((_, n) => {
             const $n = $(n);
             const text = $n.text().trim();
-            const hasStructuralChildren = $n.children('p, div, ul, ol, h1, h2, h3, h4, h5, h6, li').length > 0;
+            const hasStructuralChildren = $n.children('p, div, ul, ol, h1, h2, h3, h4, h5, h6, li, span, b, i, strong, em').length > 0;
             return text.length === 0 && !hasStructuralChildren;
         });
         
@@ -396,7 +400,8 @@ const sanitizeDescription = ($, el, baseUrl) => {
 
 // Validate if the extracted description seems complete
 const validateDescriptionCompleteness = (text, html) => {
-    if (!text || text.length < 300) return true; // Definitely incomplete
+    // FIXED: Less strict validation - only flag truly incomplete descriptions
+    if (!text || text.length < 200) return true; // Very short, likely incomplete
     
     // Check for positive indicators of completeness
     const completenessIndicators = [
@@ -404,7 +409,9 @@ const validateDescriptionCompleteness = (text, html) => {
         /requirements|qualifications|skills/i,
         /experience|background/i,
         /we are looking|ideal candidate/i,
-        /description|summary|overview/i
+        /description|summary|overview/i,
+        /benefits|perks/i, // Benefits section counts as valid content
+        /job details/i // Job details section is valid
     ];
     
     let completenessScore = 0;
@@ -412,18 +419,10 @@ const validateDescriptionCompleteness = (text, html) => {
         if (pattern.test(text)) completenessScore++;
     });
     
-    // If we have less than 2 completeness indicators and the text is short, it's likely incomplete
-    const isLikelyIncomplete = completenessScore < 2 && text.length < 800;
+    // FIXED: More lenient - only flag as incomplete if no indicators and very short
+    const isLikelyIncomplete = completenessScore === 0 && text.length < 500;
     
-    // Check if it looks like just a "Benefits" section
-    const isBenefitsOnly = /^.*benefits?.*$/i.test(text.substring(0, 100)) && 
-                          text.length < 1000 && 
-                          !text.toLowerCase().includes('responsibilities');
-    
-    // Quick check if HTML suggests it's a small section
-    const htmlSectionCheck = html && html.includes('<h') && text.length < 1200;
-    
-    return isLikelyIncomplete || isBenefitsOnly || htmlSectionCheck;
+    return isLikelyIncomplete;
 };
 
 // Fast fallback method to find a more comprehensive description container
