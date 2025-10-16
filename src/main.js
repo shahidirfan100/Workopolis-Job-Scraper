@@ -521,24 +521,24 @@ const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
-    maxRequestsPerMinute: 120, // Reduced to avoid rate limiting on pagination
+    maxRequestsPerMinute: 240, // Fast scraping while staying under rate limits
     requestHandlerTimeoutSecs: 30, // Reduced to 30 seconds to fail faster on timeouts
     navigationTimeoutSecs: 30, // Reduced to 30 seconds to fail faster on network issues
-    maxConcurrency: 5, // Balanced for stable scraping without triggering blocks
+    maxConcurrency: 10, // Higher concurrency for speed with session rotation for stealth
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 80, // Increased from 50 for better session rotation
+        maxPoolSize: 100, // Large pool for better rotation and stealth
         sessionOptions: {
-            maxUsageCount: 100, // Allow more requests per session before rotating
-            maxErrorScore: 3, // Lower tolerance - retire sessions faster on errors
+            maxUsageCount: 20, // Rotate sessions frequently to avoid blocking
+            maxErrorScore: 2, // Quick session retirement on errors
         },
     },
     // Add retry logic for better resilience
     maxRequestRetries: 3,
-    // Allow enough requests for large scrapes: list pages + detail pages + retries
-    // For 200 jobs: ~10 list pages + 200 details + margin = ~250 requests minimum
-    maxRequestsPerCrawl: RESULTS_WANTED * 2 + 100, // Dynamic limit based on target
+    // CRITICAL: Set high enough limit to not stop crawling prematurely
+    // For 500 jobs: ~20-25 list pages + 500 detail pages + retries = ~600+ requests
+    maxRequestsPerCrawl: Math.max(RESULTS_WANTED * 3, 1000), // Ensure no artificial ceiling
     preNavigationHooks: [
         async ({ request, session }) => {
             // Enhanced anti-blocking headers with better browser fingerprinting
@@ -633,37 +633,40 @@ const crawler = new CheerioCrawler({
                         crawlerLog.info(`→ Enqueued ${safeLinks.length} detail pages | Total: ${jobsEnqueued}/${RESULTS_WANTED}`);
                     }
                     
-                    // Stop enqueueing if we've reached the limit
+                    // Mark to stop enqueueing if we've reached the limit (but don't stop pagination yet)
                     if (jobsEnqueued >= RESULTS_WANTED) {
                         shouldStopEnqueuing = true;
-                        crawlerLog.info(`✓ Reached target: ${jobsEnqueued} jobs enqueued. Stopping pagination.`);
-                        return;
                     }
                 }
             }
 
-            // Check if we should stop pagination
-            if (shouldStopEnqueuing || jobsScraped >= RESULTS_WANTED) {
-                crawlerLog.info(`Stopping pagination. Scraped: ${jobsScraped}, Enqueued: ${jobsEnqueued}`);
-                return;
-            }
-
-            // Check page limit
+            // Check page limit first
             if (pageNo >= MAX_PAGES) {
                 crawlerLog.info(`Max pages (${MAX_PAGES}) reached. Stopping pagination.`);
                 return;
             }
 
-            // Continue to next page if needed - prioritize to maintain flow
+            // CRITICAL FIX: Don't stop pagination early - let it continue to gather more jobs
+            // Only stop if we've already scraped enough (not just enqueued)
+            // This ensures we get the full result set instead of stopping at ~125 jobs
+            const shouldContinuePagination = !collectDetails 
+                ? jobsScraped < RESULTS_WANTED  // Direct mode: check scraped
+                : jobsEnqueued < RESULTS_WANTED * 1.5; // Detail mode: enqueue extra to account for failures
+            
+            if (!shouldContinuePagination) {
+                crawlerLog.info(`Target reached. Scraped: ${jobsScraped}, Enqueued: ${jobsEnqueued}. Stopping pagination.`);
+                return;
+            }
+
+            // Continue to next page - prioritize to maintain flow
             const nextUrl = findNextUrl($, request.url);
             if (nextUrl && nextUrl !== request.url) {
-                crawlerLog.info(`→ Pagination: Moving from page ${pageNo} to ${pageNo + 1}`);
+                crawlerLog.info(`→ Pagination: page ${pageNo} → ${pageNo + 1} (Enqueued: ${jobsEnqueued}/${RESULTS_WANTED})`);
                 await enqueueLinks({
                     urls: [nextUrl],
                     userData: { label: 'LIST', pageNo: pageNo + 1 },
                     forefront: true // Prioritize list pages to gather links faster
                 });
-                crawlerLog.info(`→ Next page enqueued: ${pageNo + 1}`);
             } else {
                 crawlerLog.warning(`⚠ No next page found at page ${pageNo}. Pagination ended. URL: ${request.url}`);
             }
