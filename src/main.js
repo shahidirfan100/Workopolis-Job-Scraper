@@ -183,10 +183,12 @@ const findNextUrl = ($, currentUrl) => {
         if (next) return toAbs(next) || null;
     }
 
-    // Fallback: increment common page query params (page, p, pg)
+    // Fallback: increment common page query params (page, p, pg, offset, start)
     try {
         const u = new URL(currentUrl);
-        const pageParamCandidates = ['page', 'p', 'pg', 'pageNumber', 'start'];
+        
+        // Try 'page' parameter (most common)
+        const pageParamCandidates = ['page', 'p', 'pg', 'pageNumber'];
         for (const p of pageParamCandidates) {
             if (u.searchParams.has(p)) {
                 const cur = Number(u.searchParams.get(p) || '1');
@@ -196,9 +198,20 @@ const findNextUrl = ($, currentUrl) => {
                 }
             }
         }
+        
+        // Try 'start' or 'offset' parameter (offset-based pagination)
+        if (u.searchParams.has('start')) {
+            const cur = Number(u.searchParams.get('start') || '0');
+            if (!Number.isNaN(cur)) {
+                // Assume 25 results per page (common default)
+                u.searchParams.set('start', String(cur + 25));
+                return u.href;
+            }
+        }
 
-        // If no page param, try adding 'page=2' when the url has a search path
-        if (![...u.searchParams.keys()].length) {
+        // If no page param exists, add 'page=2' for first pagination
+        const hasSearchQuery = u.searchParams.has('q') || u.searchParams.has('l');
+        if (hasSearchQuery && !u.searchParams.has('page')) {
             u.searchParams.set('page', '2');
             return u.href;
         }
@@ -508,23 +521,24 @@ const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
-    maxRequestsPerMinute: 180, // Increased from 120 for faster scraping
+    maxRequestsPerMinute: 120, // Reduced to avoid rate limiting on pagination
     requestHandlerTimeoutSecs: 30, // Reduced to 30 seconds to fail faster on timeouts
     navigationTimeoutSecs: 30, // Reduced to 30 seconds to fail faster on network issues
-    maxConcurrency: 8, // Increased from 5 for parallel processing
+    maxConcurrency: 5, // Balanced for stable scraping without triggering blocks
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
         maxPoolSize: 80, // Increased from 50 for better session rotation
         sessionOptions: {
-            maxUsageCount: 50, // Increased from 30 to reduce session creation overhead
-            maxErrorScore: 5, // Increased from 3 for better error tolerance
+            maxUsageCount: 100, // Allow more requests per session before rotating
+            maxErrorScore: 3, // Lower tolerance - retire sessions faster on errors
         },
     },
     // Add retry logic for better resilience
     maxRequestRetries: 3,
-    // Reduce memory footprint by limiting request queue size
-    maxRequestsPerCrawl: Math.min(RESULTS_WANTED * 10, 500), // More conservative limit
+    // Allow enough requests for large scrapes: list pages + detail pages + retries
+    // For 200 jobs: ~10 list pages + 200 details + margin = ~250 requests minimum
+    maxRequestsPerCrawl: RESULTS_WANTED * 2 + 100, // Dynamic limit based on target
     preNavigationHooks: [
         async ({ request, session }) => {
             // Enhanced anti-blocking headers with better browser fingerprinting
@@ -564,6 +578,12 @@ const crawler = new CheerioCrawler({
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($, request.url);
             crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
+            
+            // Check if page has no jobs - might indicate end of results
+            if (links.length === 0 && pageNo > 1) {
+                crawlerLog.warning(`⚠ Page ${pageNo} has no jobs. Possible end of available results.`);
+            }
+            
             if (links.length) {
                 const sample = links.slice(0, 3).join(', '); // Reduced logging for speed
                 crawlerLog.debug(`Sample links: ${sample}`);
@@ -637,6 +657,7 @@ const crawler = new CheerioCrawler({
             // Continue to next page if needed - prioritize to maintain flow
             const nextUrl = findNextUrl($, request.url);
             if (nextUrl && nextUrl !== request.url) {
+                crawlerLog.info(`→ Pagination: Moving from page ${pageNo} to ${pageNo + 1}`);
                 await enqueueLinks({
                     urls: [nextUrl],
                     userData: { label: 'LIST', pageNo: pageNo + 1 },
@@ -644,7 +665,7 @@ const crawler = new CheerioCrawler({
                 });
                 crawlerLog.info(`→ Next page enqueued: ${pageNo + 1}`);
             } else {
-                crawlerLog.info(`No next page found. End of results.`);
+                crawlerLog.warning(`⚠ No next page found at page ${pageNo}. Pagination ended. URL: ${request.url}`);
             }
             return;
         }
