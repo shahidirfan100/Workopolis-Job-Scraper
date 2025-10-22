@@ -1,6 +1,17 @@
 {
-  "keyword": "software engineer",
-  "location": "Toronto",
+  "startUrls": [
+    {
+      "url": "https://www.workopolis.com/search?q=software+engineer&l=Toronto"
+    }
+  ],
+  "keyword": "",
+  "location": "",
+  "posted_date": "anytime",
   "results_wanted": 10,
-  "max_pages": 3
+  "max_pages": 3,
+  "collectDetails": true,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
 }

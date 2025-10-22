@@ -50,8 +50,6 @@ Actor.main(async () => {
 
         collectDetails = true,
 
-        startUrl,
-        url,
         startUrls,
 
         cookies,
@@ -61,7 +59,7 @@ Actor.main(async () => {
 
     // Validate required fields - user must provide either keyword/location or a URL
     const hasSearchTerms = keyword || location;
-    const hasUrls = startUrl || url || (startUrls && startUrls.length > 0);
+    const hasUrls = startUrls && Array.isArray(startUrls) && startUrls.length > 0;
 
     // If no search terms or URLs provided, default to 'browse' search to ensure actor doesn't fail
     // This allows the actor to work with minimal or no input (important for QA testing)
@@ -522,10 +520,23 @@ Actor.main(async () => {
     // ------------------------- START URLS -------------------------
     const builtStartUrl = buildStartUrl(keyword, location, posted_date);
     const initialUrls = [];
-    if (Array.isArray(startUrls) && startUrls.length) initialUrls.push(...startUrls);
-    if (startUrl && typeof startUrl === 'string') initialUrls.push(startUrl);
-    if (url && typeof url === 'string') initialUrls.push(url);
-    if (!initialUrls.length) initialUrls.push(builtStartUrl);
+    
+    // Handle startUrls array (Apify standard format with requestListSources)
+    if (Array.isArray(startUrls) && startUrls.length) {
+        for (const item of startUrls) {
+            // Support both object format {url: "..."} and string format
+            if (typeof item === 'string') {
+                initialUrls.push(item);
+            } else if (item && typeof item === 'object' && item.url) {
+                initialUrls.push(item.url);
+            }
+        }
+    }
+    
+    // If no URLs provided, use the built URL from keyword/location
+    if (!initialUrls.length) {
+        initialUrls.push(builtStartUrl);
+    }
 
     // ------------------------- PROXY -------------------------
     // Optimized: Use residential proxies for better stealth if available (REMOVED)

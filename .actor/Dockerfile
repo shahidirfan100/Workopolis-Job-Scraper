@@ -11,6 +11,4 @@ RUN npm i --omit=dev && rm -r ~/.npm || true
 
 COPY --chown=app:app . ./
 
-ENV APIFY_LOG_LEVEL=ERROR
-
 CMD npm start --silent

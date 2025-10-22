@@ -1,33 +1,47 @@
 {
   "title": "Workopolis Jobs Scraper",
-  "description": "Scrape jobs from Workopolis.com listings. Provide either keyword/location OR a Workopolis search URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
+  "description": "Scrape jobs from Workopolis.com listings. Provide either keyword/location OR a Workopolis search URL via Start URLs. The actor paginates and optionally scrapes detail pages.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "startUrl": {
-      "title": "Start URL",
-      "type": "string",
-      "description": "Start scraping from a specific Workopolis.com search URL. If provided, this will be used instead of Keyword/Location.",
-      "editor": "textfield"
+    "startUrls": {
+      "title": "Start URLs",
+      "type": "array",
+      "description": "One or more Workopolis.com search URLs to start scraping from. If provided, these will be used instead of Keyword/Location fields. You can mix URLs with keyword-based searches.",
+      "editor": "requestListSources",
+      "sectionCaption": "Search Configuration",
+      "sectionDescription": "Configure your job search using either Start URLs or Keyword/Location parameters.",
+      "example": [
+        {
+          "url": "https://www.workopolis.com/search?q=software+engineer&l=Toronto"
+        }
+      ],
+      "prefill": [
+        {
+          "url": "https://www.workopolis.com/search?q=software+engineer&l=Toronto"
+        }
+      ]
     },
     "keyword": {
-      "title": "Keyword (if not using Start URL)",
+      "title": "Keyword",
       "type": "string",
-      "description": "Job search keyword(s), e.g., 'Software Developer', 'Marketing Manager', 'Data Analyst', 'Nurse', 'Sales Representative'.",
+      "description": "Job search keyword(s). Examples: 'Software Developer', 'Marketing Manager', 'Data Analyst', 'Nurse', 'Sales Representative'. Leave empty if using Start URLs.",
       "editor": "textfield",
-      "prefill": "software engineer"
+      "prefill": "software engineer",
+      "example": "software engineer"
     },
     "location": {
-      "title": "Location (if not using Start URL)",
+      "title": "Location",
       "type": "string",
-      "description": "Geographic location to search in, e.g., 'Toronto', 'Vancouver', 'Calgary', 'Montreal', 'Ottawa', 'Edmonton', 'Quebec City', 'Winnipeg', 'Halifax', 'Victoria'.",
+      "description": "Geographic location to search in. Examples: 'Toronto', 'Vancouver', 'Calgary', 'Montreal', 'Ottawa', 'Edmonton', 'Quebec City', 'Winnipeg', 'Halifax', 'Victoria'. Leave empty if using Start URLs.",
       "editor": "textfield",
-      "prefill": "Toronto"
+      "prefill": "Toronto",
+      "example": "Toronto"
     },
     "posted_date": {
-      "title": "Posted Date (if not using Start URL)",
+      "title": "Posted Date",
       "type": "string",
-      "description": "Filter jobs by how recently they were posted.",
+      "description": "Filter jobs by how recently they were posted. Only applies when using Keyword/Location search.",
       "enum": [
         "anytime",
         "24h",
@@ -35,52 +49,63 @@
         "30d"
       ],
       "prefill": "anytime",
-      "editor": "select"
+      "default": "anytime",
+      "editor": "select",
+      "example": "7d"
     },
     "collectDetails": {
       "title": "Collect job details",
       "type": "boolean",
-      "description": "If enabled, scraper opens job detail pages for full description/salary.",
+      "description": "If enabled, the scraper will visit each job's detail page to extract the full description, salary information, and other detailed fields. If disabled, only basic information from the listing page will be collected.",
       "editor": "checkbox",
-      "default": true
+      "sectionCaption": "Scraping Options",
+      "sectionDescription": "Control how much data to collect and how many jobs to scrape.",
+      "default": true,
+      "example": true
     },
     "results_wanted": {
       "title": "Maximum number of jobs",
       "type": "integer",
-      "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
+      "description": "The maximum number of jobs to collect. The actor will stop after reaching this limit.",
       "minimum": 1,
       "default": 50,
-      "editor": "number"
+      "editor": "number",
+      "example": 100
     },
     "max_pages": {
       "title": "Maximum number of pages",
       "type": "integer",
-      "description": "A safety cap on the number of search result pages to visit.",
+      "description": "A safety cap on the number of search result pages to visit. This prevents the actor from running indefinitely.",
       "minimum": 1,
+      "default": 10,
       "editor": "number",
-      "default": 10
+      "example": 5
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
-      "description": "Use Apify Proxy for the best results.",
+      "description": "Proxy settings for the scraper. Using Apify Proxy is recommended for best results and to avoid being blocked.",
       "editor": "proxy",
+      "sectionCaption": "Advanced Configuration",
+      "sectionDescription": "Optional advanced settings for proxy and cookie configuration.",
       "default": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["AUTO"]
+        "apifyProxyGroups": ["RESIDENTIAL"]
       }
     },
     "cookies": {
       "title": "Custom cookies (raw header)",
       "type": "string",
-      "description": "Optional raw 'Cookie' header string. Can help bypass consent banners.",
-      "editor": "textfield"
+      "description": "Optional raw 'Cookie' header string. Can help bypass consent banners or maintain session state. Format: 'cookie1=value1; cookie2=value2'",
+      "editor": "textfield",
+      "example": "sessionid=abc123; consent=accepted"
     },
     "cookiesJson": {
       "title": "Custom cookies (JSON)",
       "type": "string",
-      "description": "Optional JSON-formatted cookies. Accepts an array (e.g., [{\"name\":\"a\",\"value\":\"1\"}]) or an object map (e.g., {\"a\":\"1\"}).",
-      "editor": "textarea"
+      "description": "Optional JSON-formatted cookies. Accepts an array (e.g., [{\"name\":\"sessionid\",\"value\":\"abc123\"}]) or an object map (e.g., {\"sessionid\":\"abc123\"}).",
+      "editor": "textarea",
+      "example": "{\"sessionid\":\"abc123\",\"consent\":\"accepted\"}"
     }
   },
   "required": [],
