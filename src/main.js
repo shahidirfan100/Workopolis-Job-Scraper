@@ -567,49 +567,58 @@ Actor.main(async () => {
     const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 
     // ------------------------- CRAWLER -------------------------
-    // Optimized settings with anti-blocking measures
+    // Anti-blocking settings optimized for Workopolis
     const crawler = new CheerioCrawler({
         proxyConfiguration: proxyConf,
-        maxRequestsPerMinute: 120, // Reduced to avoid rate limiting (was 240)
-        requestHandlerTimeoutSecs: 30,
-        navigationTimeoutSecs: 30,
-        maxConcurrency: 5, // Reduced concurrency to be more gentle (was 10)
+        maxRequestsPerMinute: 60, // Further reduced to avoid rate limiting
+        requestHandlerTimeoutSecs: 45, // Increased timeout for slower proxies
+        navigationTimeoutSecs: 45,
+        maxConcurrency: 3, // Lower concurrency = more stealth
+        minConcurrency: 1,
         useSessionPool: true,
         persistCookiesPerSession: true,
         sessionPoolOptions: {
-            maxPoolSize: 50, // Reduced pool size (was 100)
+            maxPoolSize: 30,
             sessionOptions: {
-                maxUsageCount: 10, // More frequent rotation (was 20)
-                maxErrorScore: 1, // Retire sessions faster on errors (was 2)
+                maxUsageCount: 5, // Rotate sessions very frequently for stealth
+                maxErrorScore: 0.5, // Retire bad sessions immediately
             },
         },
-        maxRequestRetries: 3,
-        maxRequestsPerCrawl: Math.max(RESULTS_WANTED * 3, 1000),
+        maxRequestRetries: 2, // Reduced retries - if it fails twice, move on
+        maxRequestsPerCrawl: Math.max(RESULTS_WANTED * 4, 1000),
         preNavigationHooks: [
-            // (Function unchanged)
             async ({ request, session }) => {
-                // Enhanced anti-blocking headers with better browser fingerprinting
+                // Enhanced stealth headers with realistic browser fingerprint
                 const isListPage = !request.userData?.label || request.userData?.label === 'LIST';
+                const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
                 
+                // More realistic headers that mimic real browser behavior
                 request.headers = {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9,en-CA;q=0.8,fr-CA;q=0.7', // More Canada-specific for Workopolis
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                    'Accept-Language': 'en-US,en;q=0.9',
                     'Accept-Encoding': 'gzip, deflate, br',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
                     'Sec-Fetch-Dest': 'document',
                     'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': isListPage ? 'none' : 'same-origin', // Realistic navigation pattern
+                    'Sec-Fetch-Site': isListPage ? 'none' : 'same-origin',
                     'Sec-Fetch-User': '?1',
-                    'Cache-Control': 'max-age=0',
-                    'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
-                    // Add realistic referer for detail pages
-                    ...(isListPage ? {} : { 'Referer': 'https://www.workopolis.com/' }),
-                    ...request.headers,
+                    'Upgrade-Insecure-Requests': '1',
+                    'User-Agent': ua,
+                    'Dnt': '1',
+                    ...(isListPage ? {} : { 'Referer': 'https://www.workopolis.com/search' }),
                 };
                 
                 if (cookieHeader) {
                     request.headers.Cookie = cookieHeader;
+                }
+                
+                // Add small random delay between requests for more natural behavior
+                if (!isListPage) {
+                    await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
                 }
             }
         ],
@@ -625,18 +634,15 @@ Actor.main(async () => {
 
             if (label === 'LIST' || !label) {
                 const links = collectJobLinks($, request.url);
-                crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
+                
+                // Reduced logging - only log significant events
+                if (pageNo === 1 || pageNo % 5 === 0) {
+                    crawlerLog.info(`Page ${pageNo}: Found ${links.length} jobs | Progress: ${jobsScraped}/${RESULTS_WANTED}`);
+                }
                 
                 // Check if page has no jobs - might indicate end of results
                 if (links.length === 0 && pageNo > 1) {
-                    crawlerLog.warning(`⚠ Page ${pageNo} has no jobs. Possible end of available results.`);
-                }
-                
-                if (links.length) {
-                    const sample = links.slice(0, 3).join(', '); // Reduced logging for speed
-                    crawlerLog.debug(`Sample links: ${sample}`);
-                } else {
-                    crawlerLog.debug('No candidate links found on this list page (links.length === 0)');
+                    crawlerLog.warning(`⚠ Page ${pageNo} has no jobs. Possible end of results.`);
                 }
 
                 if (!collectDetails) {
@@ -653,17 +659,20 @@ Actor.main(async () => {
                             _from: 'list'
                         }));
                         
-                        // Batch push for better performance
                         await Dataset.pushData(dataItems);
                         jobsScraped += dataItems.length;
-                        crawlerLog.info(`✓ Batch saved ${dataItems.length} jobs | Total: ${jobsScraped}/${RESULTS_WANTED}`);
+                        
+                        // Only log every 10 jobs or at key milestones
+                        if (jobsScraped % 10 === 0 || jobsScraped === RESULTS_WANTED) {
+                            crawlerLog.info(`✓ Saved ${jobsScraped}/${RESULTS_WANTED} jobs`);
+                        }
                     }
                     
                     if (jobsScraped >= RESULTS_WANTED) {
                         shouldStopEnqueuing = true;
                     }
                 } else {
-                    // Detail mode - only enqueue what we need with batching
+                    // Detail mode - only enqueue what we need
                     if (!shouldStopEnqueuing) {
                         const remaining = RESULTS_WANTED - jobsEnqueued;
                         const linksToEnqueue = links.slice(0, Math.max(0, remaining));
@@ -671,17 +680,14 @@ Actor.main(async () => {
                         if (linksToEnqueue.length > 0) {
                             const safeLinks = linksToEnqueue.filter(l => /^https:\/\/(www\.)?workopolis\.com/i.test(l));
                             
-                            // Batch enqueue for better performance
                             await enqueueLinks({
                                 urls: safeLinks,
                                 userData: { label: 'DETAIL' },
-                                forefront: false // Don't prioritize to maintain natural flow
+                                forefront: false
                             });
                             jobsEnqueued += safeLinks.length;
-                            crawlerLog.info(`→ Enqueued ${safeLinks.length} detail pages | Total: ${jobsEnqueued}/${RESULTS_WANTED}`);
                         }
                         
-                        // Mark to stop enqueueing if we've reached the limit (but don't stop pagination yet)
                         if (jobsEnqueued >= RESULTS_WANTED) {
                             shouldStopEnqueuing = true;
                         }
@@ -690,33 +696,28 @@ Actor.main(async () => {
 
                 // Check page limit first
                 if (pageNo >= MAX_PAGES) {
-                    crawlerLog.info(`Max pages (${MAX_PAGES}) reached. Stopping pagination.`);
+                    crawlerLog.info(`Max pages (${MAX_PAGES}) reached.`);
                     return;
                 }
 
-                // CRITICAL FIX: Don't stop pagination early - let it continue to gather more jobs
                 // Only stop if we've already scraped enough (not just enqueued)
-                // This ensures we get the full result set instead of stopping at ~125 jobs
                 const shouldContinuePagination = !collectDetails 
-                    ? jobsScraped < RESULTS_WANTED  // Direct mode: check scraped
-                    : jobsEnqueued < RESULTS_WANTED * 1.5; // Detail mode: enqueue extra to account for failures
+                    ? jobsScraped < RESULTS_WANTED
+                    : jobsEnqueued < RESULTS_WANTED * 1.5;
                 
                 if (!shouldContinuePagination) {
-                    crawlerLog.info(`Target reached. Scraped: ${jobsScraped}, Enqueued: ${jobsEnqueued}. Stopping pagination.`);
+                    crawlerLog.info(`Target reached: ${jobsScraped} scraped, ${jobsEnqueued} enqueued.`);
                     return;
                 }
 
-                // Continue to next page - prioritize to maintain flow
+                // Continue to next page
                 const nextUrl = findNextUrl($, request.url);
                 if (nextUrl && nextUrl !== request.url) {
-                    crawlerLog.info(`→ Pagination: page ${pageNo} → ${pageNo + 1} (Enqueued: ${jobsEnqueued}/${RESULTS_WANTED})`);
                     await enqueueLinks({
                         urls: [nextUrl],
                         userData: { label: 'LIST', pageNo: pageNo + 1 },
-                        forefront: true // Prioritize list pages to gather links faster
+                        forefront: true
                     });
-                } else {
-                    crawlerLog.warning(`⚠ No next page found at page ${pageNo}. Pagination ended. URL: ${request.url}`);
                 }
                 return;
             }
@@ -978,11 +979,9 @@ Actor.main(async () => {
                     crawlerLog.debug(`Could not find description container for ${request.url}`);
                 }
                 
-                // Reduced logging for speed - only log issues
-                if (!title) crawlerLog.debug(`Missing title: ${request.url}`);
-                if (!company) crawlerLog.debug(`Missing company: ${request.url}`);
-                if (description_text && description_text.length < 400) {
-                    crawlerLog.debug(`Short description (${description_text.length} chars): ${request.url}`);
+                // Minimal logging - only critical issues
+                if (!title && !company) {
+                    crawlerLog.debug(`Missing key fields for ${request.url}`);
                 }
 
                 const item = {
@@ -1001,9 +1000,9 @@ Actor.main(async () => {
                 await Dataset.pushData(item);
                 jobsScraped++;
                 
-                // Reduced logging frequency - only log every 5th job or first/last
+                // Only log progress at key milestones (every 5 jobs or first/last)
                 if (jobsScraped % 5 === 0 || jobsScraped === 1 || jobsScraped === RESULTS_WANTED) {
-                    crawlerLog.info(`✓ Progress: ${jobsScraped}/${RESULTS_WANTED} jobs saved`);
+                    crawlerLog.info(`✓ Progress: ${jobsScraped}/${RESULTS_WANTED} jobs`);
                 }
                 } catch (err) {
                     crawlerLog.error(`Error extracting job details from ${request.url}: ${err.message}`);
@@ -1012,19 +1011,18 @@ Actor.main(async () => {
             }
         },
         
-        // Enhanced failure handler for better error recovery and stealth
-        // QA-Friendly Update: Log failures at 'error' level for visibility
+        // Simplified failure handler with minimal logging
         failedRequestHandler: async ({ request, session }, error) => {
-            log.error(`Request failed: ${request.url} (Label: ${request.userData?.label || 'N/A'}) - ${error.message}`);
+            // Only log critical failures
+            const isBlocked = error.message.includes('403') || error.message.includes('blocked');
             
-            // Mark session as bad if we get blocking indicators
-            if (session && (error.message.includes('403') || error.message.includes('blocked') || error.message.includes('captcha'))) {
+            if (session && isBlocked) {
                 session.markBad();
-                log.warning(`Session blocked detected. Rotating session for request: ${request.url}`);
             }
             
+            // Only log LIST page failures as they're critical
             if (request.userData?.label === 'LIST') {
-                log.error(`Failed to scrape job LIST page. This may impact the number of results found. URL: ${request.url}`);
+                log.error(`LIST page failed: ${request.url.substring(0, 100)}`);
             }
         },
     });
@@ -1032,28 +1030,20 @@ Actor.main(async () => {
     try {
         log.info('Starting crawl with initial URLs:', initialUrls);
         await crawler.run(initialUrls.map(u => ({ url: u, userData: { label: 'LIST', pageNo: 1 } })));
-        log.info(`✓ Scraping completed. Total jobs scraped: ${jobsScraped}/${RESULTS_WANTED} | Jobs enqueued: ${jobsEnqueued}`);
-        
-        // Health check: Mark as passed if we reach this point (REMOVED)
-        // healthCheckPassed = true; // REMOVED
+        log.info(`✓ Completed: ${jobsScraped}/${RESULTS_WANTED} jobs scraped`);
         
         // Check if we got any results
         if (jobsScraped === 0) {
-            log.warning('No jobs were scraped. This might indicate an issue with the search or the website structure.');
-            // Still exit successfully as this isn't an error condition
+            log.warning('No jobs scraped. Check search parameters or site availability.');
         }
         
         // Log execution time
         const executionTime = Date.now() - startTime;
-        log.info(`Actor execution completed in ${Math.round(executionTime/1000)} seconds.`);
+        log.info(`Execution time: ${Math.round(executionTime/1000)}s`);
         
     } catch (error) {
-        log.error(`Actor failed with error: ${error.message}`);
-        log.error(`Stack trace: ${error.stack}`);
-        throw error; // Re-throw to ensure Actor exits with error status
-    } finally {
-        // Ensure health check is marked as passed to prevent timeout (REMOVED)
-        // healthCheckPassed = true; // REMOVED
+        log.error(`Actor failed: ${error.message}`);
+        throw error;
     }
 
     // await Actor.exit(); // Handled by Actor.main()
