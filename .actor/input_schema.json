@@ -9,8 +9,6 @@
       "type": "array",
       "description": "One or more Workopolis.com search URLs to start scraping from. If provided, these will be used instead of Keyword/Location fields. You can mix URLs with keyword-based searches.",
       "editor": "requestListSources",
-      "sectionCaption": "Search Configuration",
-      "sectionDescription": "Configure your job search using either Start URLs or Keyword/Location parameters.",
       "example": [
         {
           "url": "https://www.workopolis.com/search?q=software+engineer&l=Toronto"
@@ -58,8 +56,6 @@
       "type": "boolean",
       "description": "If enabled, the scraper will visit each job's detail page to extract the full description, salary information, and other detailed fields. If disabled, only basic information from the listing page will be collected.",
       "editor": "checkbox",
-      "sectionCaption": "Scraping Options",
-      "sectionDescription": "Control how much data to collect and how many jobs to scrape.",
       "default": true,
       "example": true
     },
@@ -84,10 +80,8 @@
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
-      "description": "Proxy settings for the scraper. Using Apify Proxy is recommended for best results and to avoid being blocked.",
+      "description": "Proxy settings for the scraper. Using Apify Proxy with RESIDENTIAL proxies is strongly recommended to avoid being blocked.",
       "editor": "proxy",
-      "sectionCaption": "Advanced Configuration",
-      "sectionDescription": "Optional advanced settings for proxy and cookie configuration.",
       "default": {
         "useApifyProxy": true,
         "apifyProxyGroups": ["RESIDENTIAL"]

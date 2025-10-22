@@ -539,12 +539,26 @@ Actor.main(async () => {
     }
 
     // ------------------------- PROXY -------------------------
-    // Optimized: Use residential proxies for better stealth if available (REMOVED)
-    // QA-Friendly Update: Strictly honor the provided proxyConfiguration input
-    // without forcing specific groups like 'RESIDENTIAL'.
-    const proxyConf = proxyConfiguration
-        ? await Actor.createProxyConfiguration(proxyConfiguration)
-        : undefined;
+    // CRITICAL FIX: Workopolis blocks requests without proper proxies
+    // If proxyConfiguration is provided but has empty groups, default to RESIDENTIAL
+    let proxyConf;
+    if (proxyConfiguration) {
+        // Check if apifyProxyGroups is empty array and fix it
+        if (proxyConfiguration.useApifyProxy && 
+            Array.isArray(proxyConfiguration.apifyProxyGroups) && 
+            proxyConfiguration.apifyProxyGroups.length === 0) {
+            log.warning('Empty proxy groups detected. Defaulting to RESIDENTIAL proxies to avoid blocking.');
+            proxyConfiguration.apifyProxyGroups = ['RESIDENTIAL'];
+        }
+        proxyConf = await Actor.createProxyConfiguration(proxyConfiguration);
+    } else {
+        // No proxy config provided - use default RESIDENTIAL to avoid 403 errors
+        log.warning('No proxy configuration provided. Using RESIDENTIAL proxies to avoid blocking.');
+        proxyConf = await Actor.createProxyConfiguration({
+            useApifyProxy: true,
+            apifyProxyGroups: ['RESIDENTIAL']
+        });
+    }
 
     // ------------------------- SHARED STATE -------------------------
     let jobsScraped = 0; // Actual jobs pushed to dataset
@@ -553,27 +567,24 @@ Actor.main(async () => {
     const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 
     // ------------------------- CRAWLER -------------------------
-    // (All crawler performance and stealth settings remain unchanged)
+    // Optimized settings with anti-blocking measures
     const crawler = new CheerioCrawler({
         proxyConfiguration: proxyConf,
-        maxRequestsPerMinute: 240, // Fast scraping while staying under rate limits
-        requestHandlerTimeoutSecs: 30, // Reduced to 30 seconds to fail faster on timeouts
-        navigationTimeoutSecs: 30, // Reduced to 30 seconds to fail faster on network issues
-        maxConcurrency: 10, // Higher concurrency for speed with session rotation for stealth
+        maxRequestsPerMinute: 120, // Reduced to avoid rate limiting (was 240)
+        requestHandlerTimeoutSecs: 30,
+        navigationTimeoutSecs: 30,
+        maxConcurrency: 5, // Reduced concurrency to be more gentle (was 10)
         useSessionPool: true,
         persistCookiesPerSession: true,
         sessionPoolOptions: {
-            maxPoolSize: 100, // Large pool for better rotation and stealth
+            maxPoolSize: 50, // Reduced pool size (was 100)
             sessionOptions: {
-                maxUsageCount: 20, // Rotate sessions frequently to avoid blocking
-                maxErrorScore: 2, // Quick session retirement on errors
+                maxUsageCount: 10, // More frequent rotation (was 20)
+                maxErrorScore: 1, // Retire sessions faster on errors (was 2)
             },
         },
-        // Add retry logic for better resilience
         maxRequestRetries: 3,
-        // CRITICAL: Set high enough limit to not stop crawling prematurely
-        // For 500 jobs: ~20-25 list pages + 500 detail pages + retries = ~600+ requests
-        maxRequestsPerCrawl: Math.max(RESULTS_WANTED * 3, 1000), // Ensure no artificial ceiling
+        maxRequestsPerCrawl: Math.max(RESULTS_WANTED * 3, 1000),
         preNavigationHooks: [
             // (Function unchanged)
             async ({ request, session }) => {
