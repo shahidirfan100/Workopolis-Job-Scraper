@@ -8,53 +8,8 @@
   "dockerfile": "./Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
+  "output": "./output_schema.json",
   "categories": ["JOBS"],
-  "storages": {
-    "dataset": {
-      "actorSpecification": 1,
-      "title": "Workopolis Jobs",
-      "description": "Job listings scraped from Workopolis.com",
-      "views": {
-        "overview": {
-          "title": "Overview",
-          "transformation": {
-            "fields": [
-              "title",
-              "company",
-              "location",
-              "date_posted",
-              "url"
-            ]
-          },
-          "display": {
-            "component": "table",
-            "properties": {
-              "title": {
-                "label": "Job Title",
-                "format": "text"
-              },
-              "company": {
-                "label": "Company",
-                "format": "text"
-              },
-              "location": {
-                "label": "Location",
-                "format": "text"
-              },
-              "date_posted": {
-                "label": "Posted Date",
-                "format": "text"
-              },
-              "url": {
-                "label": "URL",
-                "format": "link"
-              }
-            }
-          }
-        }
-      }
-    }
-  },
   "nodeJsVersion": "22",
   "storages": {
     "dataset": "./dataset_schema.json"
