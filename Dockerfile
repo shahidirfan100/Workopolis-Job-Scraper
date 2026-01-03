@@ -1,16 +1,16 @@
-# Lightweight Node.js image for fast startup
-FROM apify/actor-node:22-slim
+FROM alpine:latest
 
-# Copy package files first for caching
-COPY package.json ./
+RUN apk add --no-cache nodejs npm
 
-# Install dependencies (minimal - only apify + got-scraping)
-RUN npm install --omit=dev --omit=optional \
-    && npm cache clean --force \
-    && rm -rf /tmp/*
+RUN addgroup app && adduser app -G app -D
+WORKDIR /home/app
+USER app
 
-# Copy source code
-COPY . ./
+COPY --chown=app:app package*.json ./
+RUN npm i --omit=dev && rm -r ~/.npm || true
 
-# Run the actor
-CMD ["npm", "start"]
+COPY --chown=app:app . ./
+
+ENV APIFY_LOG_LEVEL=INFO
+
+CMD npm start --silent
