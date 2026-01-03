@@ -6,22 +6,19 @@
       "title": "Overview",
       "transformation": {
         "fields": [
-          "url",
           "title",
           "company",
           "location",
           "salary",
           "employmentType",
-          "datePosted"
+          "workSettings",
+          "datePosted",
+          "url"
         ]
       },
       "display": {
         "component": "table",
         "properties": {
-          "url": {
-            "label": "URL",
-            "format": "link"
-          },
           "title": {
             "label": "Job Title",
             "format": "text"
@@ -42,8 +39,93 @@
             "label": "Type",
             "format": "text"
           },
+          "workSettings": {
+            "label": "Work Setting",
+            "format": "text"
+          },
           "datePosted": {
             "label": "Posted",
+            "format": "text"
+          },
+          "url": {
+            "label": "URL",
+            "format": "link"
+          }
+        }
+      }
+    },
+    "details": {
+      "title": "Full Details",
+      "transformation": {
+        "fields": [
+          "title",
+          "company",
+          "location",
+          "salary",
+          "employmentType",
+          "workSettings",
+          "datePosted",
+          "benefits",
+          "snippet",
+          "requirements",
+          "description_text",
+          "url",
+          "jobKey"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "title": {
+            "label": "Job Title",
+            "format": "text"
+          },
+          "company": {
+            "label": "Company",
+            "format": "text"
+          },
+          "location": {
+            "label": "Location",
+            "format": "text"
+          },
+          "salary": {
+            "label": "Salary",
+            "format": "text"
+          },
+          "employmentType": {
+            "label": "Type",
+            "format": "text"
+          },
+          "workSettings": {
+            "label": "Work Setting",
+            "format": "text"
+          },
+          "datePosted": {
+            "label": "Posted",
+            "format": "text"
+          },
+          "benefits": {
+            "label": "Benefits",
+            "format": "text"
+          },
+          "snippet": {
+            "label": "Snippet",
+            "format": "text"
+          },
+          "requirements": {
+            "label": "Requirements",
+            "format": "text"
+          },
+          "description_text": {
+            "label": "Description",
+            "format": "text"
+          },
+          "url": {
+            "label": "URL",
+            "format": "link"
+          },
+          "jobKey": {
+            "label": "Job ID",
             "format": "text"
           }
         }

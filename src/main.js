@@ -15,8 +15,8 @@ const USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 ];
 
-const MIN_DELAY_MS = 800;
-const MAX_DELAY_MS = 2000;
+const MIN_DELAY_MS = 300;
+const MAX_DELAY_MS = 800;
 const MAX_RETRIES = 3;
 
 Actor.main(async () => {
@@ -187,7 +187,8 @@ Actor.main(async () => {
         let description_text = null;
 
         if (viewJobData && viewJobData.jobKey === job.jobKey) {
-            description_html = viewJobData.description || viewJobData.jobDescription || viewJobData.formattedDescription || null;
+            // Correct field name: jobDescriptionHtml
+            description_html = viewJobData.jobDescriptionHtml || viewJobData.description || null;
             if (description_html) {
                 description_text = description_html
                     .replace(/<[^>]+>/g, ' ')
@@ -201,7 +202,11 @@ Actor.main(async () => {
         if (job.company) {
             company = typeof job.company === 'string' ? job.company : job.company.name || job.company.displayName;
         }
-        company = company || job.companyName || job.employer || job.hiringOrganization?.name || null;
+        company = company || job.companyName || job.employer || null;
+        // Fallback to viewJobData.employerName
+        if (!company && viewJobData && viewJobData.jobKey === job.jobKey) {
+            company = viewJobData.employerName;
+        }
 
         // Extract salary info
         let salary = null;
@@ -221,8 +226,11 @@ Actor.main(async () => {
         // Fallback to string salary
         salary = salary || job.salary || job.salaryText || job.compensation || null;
 
-        // Extract date posted - try multiple fields
-        const datePosted = job.datePosted || job.postingDate || job.date || job.pubDate || job.postedDate || null;
+        // Extract date posted - dateOnIndeed or datePublished are the correct fields
+        let datePosted = job.dateOnIndeed || job.datePublished || job.datePosted || null;
+        if (!datePosted && viewJobData && viewJobData.jobKey === job.jobKey) {
+            datePosted = viewJobData.datePublished || viewJobData.dateOnIndeed;
+        }
 
         // Extract location - handle object or string
         let location = null;
@@ -242,6 +250,21 @@ Actor.main(async () => {
         }
         employmentType = employmentType || job.jobType || job.type || null;
 
+        // Extract benefits
+        let benefits = null;
+        if (job.benefits && Array.isArray(job.benefits)) {
+            benefits = job.benefits.map(b => typeof b === 'string' ? b : b.label || b.name).filter(Boolean).join(', ');
+        }
+
+        // Extract remote/work settings
+        let workSettings = null;
+        if (job.remoteAttributes) {
+            workSettings = job.remoteAttributes.displayValue || (job.remoteAttributes.isRemote ? 'Remote' : null);
+        }
+        if (!workSettings && viewJobData && viewJobData.jobKey === job.jobKey && viewJobData.workSettings) {
+            workSettings = Array.isArray(viewJobData.workSettings) ? viewJobData.workSettings.join(', ') : viewJobData.workSettings;
+        }
+
         return {
             url: `https://www.workopolis.com/jobsearch/viewjob/${job.jobKey}`,
             jobKey: job.jobKey,
@@ -250,8 +273,11 @@ Actor.main(async () => {
             location,
             salary,
             employmentType,
+            workSettings,
             datePosted,
-            requirements: job.requirements || job.qualifications || null,
+            benefits,
+            snippet: job.snippet || null,
+            requirements: job.requirements || null,
             description_html,
             description_text,
             _source: 'workopolis.com',
@@ -463,8 +489,14 @@ Actor.main(async () => {
     }
 
     // ======================== PHASE 3: Fetch Job Details (if needed) ========================
-    if (collectDetails && buildId) {
-        log.info(`Enriching ${jobs.length} jobs with full descriptions...`);
+    // Count how many jobs already have descriptions from __NEXT_DATA__ viewJobData
+    const jobsWithDescription = jobs.filter(j => j.description_html).length;
+    const jobsNeedingDetails = jobs.length - jobsWithDescription;
+
+    log.info(`Jobs with description from listing: ${jobsWithDescription}/${jobs.length}`);
+
+    if (collectDetails && buildId && jobsNeedingDetails > 0) {
+        log.info(`Fetching details for ${jobsNeedingDetails} jobs missing descriptions...`);
 
         let enriched = 0;
         const batchSize = 5; // Process in small batches for stealth
@@ -473,33 +505,49 @@ Actor.main(async () => {
             const batch = jobs.slice(i, i + batchSize);
 
             await Promise.all(batch.map(async (job) => {
+                // Skip jobs that already have description
                 if (job.description_html) {
-                    enriched++;
-                    return; // Already has description from listing
+                    return;
                 }
 
                 const detail = await fetchJobDetail(buildId, job.jobKey);
                 if (detail) {
-                    job.description_html = detail.description || detail.jobDescription || null;
+                    // Correct field: jobDescriptionHtml
+                    job.description_html = detail.jobDescriptionHtml || detail.description || null;
                     if (job.description_html) {
                         job.description_text = job.description_html
                             .replace(/<[^>]+>/g, ' ')
                             .replace(/\s+/g, ' ')
                             .trim();
+                        enriched++;
                     }
-                    // Additional fields from detail
-                    if (!job.datePosted && detail.datePosted) job.datePosted = detail.datePosted;
-                    enriched++;
+
+                    // Enrich other fields from detail if missing
+                    if (!job.company && detail.employerName) job.company = detail.employerName;
+                    if (!job.datePosted) job.datePosted = detail.datePublished || detail.dateOnIndeed;
+                    if (!job.location && detail.formattedLocation) job.location = detail.formattedLocation;
+                    if (!job.salary && detail.compensation) {
+                        job.salary = typeof detail.compensation === 'string' ? detail.compensation :
+                            detail.compensation.text || detail.compensation.basePay || null;
+                    }
+                    if (!job.workSettings && detail.workSettings) {
+                        job.workSettings = Array.isArray(detail.workSettings) ? detail.workSettings.join(', ') : detail.workSettings;
+                    }
                 }
             }));
 
-            // Progress logging
+            // Progress logging every 20 jobs
             if ((i + batchSize) % 20 === 0 || i + batchSize >= jobs.length) {
-                log.info(`Enrichment progress: ${Math.min(i + batchSize, jobs.length)}/${jobs.length}`);
+                log.info(`Detail fetch progress: ${Math.min(i + batchSize, jobs.length)}/${jobs.length}`);
             }
         }
 
-        log.info(`Enriched ${enriched}/${jobs.length} jobs with descriptions`);
+        log.info(`Enriched ${enriched} additional jobs with descriptions`);
+        log.info(`Total jobs with descriptions: ${jobsWithDescription + enriched}/${jobs.length}`);
+    } else if (!collectDetails) {
+        log.info('Skipping detail page fetches (collectDetails=false) for faster execution');
+    } else if (jobsNeedingDetails === 0) {
+        log.info('All jobs already have descriptions from listing data - no detail fetches needed!');
     }
 
     // ======================== PHASE 4: Save Results ========================
