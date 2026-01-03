@@ -16,9 +16,9 @@ const USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 ];
 
-const MIN_DELAY_MS = 100;
-const MAX_DELAY_MS = 300;
-const MAX_RETRIES = 2;
+const MIN_DELAY_MS = 500;
+const MAX_DELAY_MS = 1500;
+const MAX_RETRIES = 3;
 
 Actor.main(async () => {
     const startTime = Date.now();
@@ -141,17 +141,24 @@ Actor.main(async () => {
                 return response;
             } catch (error) {
                 const status = error.response?.statusCode;
-                if (status === 403 || status === 429) {
-                    log.warning(`Blocked (${status}), retrying...`);
+                if (status === 403) {
+                    log.error(`Blocked (403) - Check proxy configuration!`);
+                    if (!proxyUrl) {
+                        log.error('❌ No proxy detected. Enable Apify Proxy with RESIDENTIAL groups.');
+                    }
+                } else if (status === 429) {
+                    log.warning(`Rate limited (429), backing off...`);
                 }
                 if (attempt < retries) {
-                    await new Promise(r => setTimeout(r, 1000 * attempt));
+                    const backoff = 3000 * attempt;
+                    log.info(`Retry ${attempt}/${retries} in ${backoff}ms...`);
+                    await new Promise(r => setTimeout(r, backoff));
                 } else {
                     throw error;
                 }
             }
         }
-        throw new Error(`Failed after ${retries} attempts: ${url}`);
+        throw new Error(`Failed after ${retries} attempts`);
     };
 
     /**
