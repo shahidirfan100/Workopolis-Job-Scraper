@@ -1,16 +1,19 @@
-FROM alpine:latest
+# Use official Apify Node.js base image for guaranteed compatibility
+FROM apify/actor-node:22
 
-RUN apk add --no-cache nodejs npm
+# Copy package files
+COPY package*.json ./
 
-RUN addgroup app && adduser app -G app -D
-WORKDIR /home/app
-USER app
+# Install production dependencies
+RUN npm install --omit=dev --omit=optional \
+    && npm cache clean --force \
+    && rm -rf /tmp/*
 
-COPY --chown=app:app package*.json ./
-RUN npm i --omit=dev && rm -r ~/.npm || true
+# Copy source code
+COPY . ./
 
-COPY --chown=app:app . ./
-
+# Set environment
 ENV APIFY_LOG_LEVEL=INFO
 
-CMD npm start --silent
+# Run the actor
+CMD ["npm", "start", "--silent"]
