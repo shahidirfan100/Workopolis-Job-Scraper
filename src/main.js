@@ -104,10 +104,27 @@ Actor.main(async () => {
     });
 
     /**
-     * Make HTTP request with retries and stealth
+     * Fast HTTP request without delay (for detail pages)
+     */
+    const fastFetch = async (url, referer = null) => {
+        try {
+            const response = await gotScraping({
+                url,
+                headers: buildHeaders(referer),
+                proxyUrl,
+                timeout: { request: 15000 },
+                retry: { limit: 1 },
+            });
+            return response;
+        } catch (error) {
+            return null; // Silent fail for speed
+        }
+    };
+
+    /**
+     * Make HTTP request with delay and retries (for listing pages)
      */
     const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES) => {
-        // Extract referer separately - it's not a valid gotScraping option
         const { referer, ...restOptions } = options;
 
         for (let attempt = 1; attempt <= retries; attempt++) {
@@ -125,10 +142,10 @@ Actor.main(async () => {
             } catch (error) {
                 const status = error.response?.statusCode;
                 if (status === 403 || status === 429) {
-                    log.warning(`Blocked (${status}) on attempt ${attempt}/${retries}: ${url}`);
+                    log.warning(`Blocked (${status}), retrying...`);
                 }
                 if (attempt < retries) {
-                    await new Promise(r => setTimeout(r, 2000 * attempt)); // Exponential backoff
+                    await new Promise(r => setTimeout(r, 1000 * attempt));
                 } else {
                     throw error;
                 }
@@ -380,25 +397,24 @@ Actor.main(async () => {
     const fetchJobDetail = async (jobKey) => {
         try {
             const htmlUrl = `https://www.workopolis.com/jobsearch/viewjob/${jobKey}`;
-            const response = await fetchWithRetry(htmlUrl, { referer: 'https://www.workopolis.com/search' });
+            const response = await fastFetch(htmlUrl, 'https://www.workopolis.com/search');
+            if (!response) return null;
+
             const $ = cheerio.load(response.body);
 
-            // Extract from __NEXT_DATA__ in HTML (most reliable)
+            // Extract from __NEXT_DATA__ in HTML
             const nextDataScript = $('#__NEXT_DATA__').html();
             if (nextDataScript) {
-                try {
-                    const nextData = JSON.parse(nextDataScript);
-                    const viewJobData = nextData.props?.pageProps?.viewJobData;
-                    if (viewJobData && viewJobData.jobDescriptionHtml) {
-                        return viewJobData;
-                    }
-                } catch (e) { /* ignore parse errors */ }
+                const nextData = JSON.parse(nextDataScript);
+                const viewJobData = nextData.props?.pageProps?.viewJobData;
+                if (viewJobData && viewJobData.jobDescriptionHtml) {
+                    return viewJobData;
+                }
             }
 
             // Fallback: direct HTML parsing
             const descriptionHtml = $('[data-testid="viewJobBodyJobFullDescriptionContent"]').html() ||
-                $('.job-description').html() ||
-                $('[data-testid="job-description"]').html();
+                $('.job-description').html();
 
             if (descriptionHtml) {
                 return {
@@ -409,9 +425,8 @@ Actor.main(async () => {
                 };
             }
         } catch (error) {
-            // Silent fail - will return null
+            // Silent fail for speed
         }
-
         return null;
     };
 
