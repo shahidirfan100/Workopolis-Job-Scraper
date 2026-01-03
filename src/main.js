@@ -16,9 +16,9 @@ const USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 ];
 
-const MIN_DELAY_MS = 500;
-const MAX_DELAY_MS = 1500;
-const MAX_RETRIES = 3;
+const MIN_DELAY_MS = 300;
+const MAX_DELAY_MS = 600;
+const MAX_RETRIES = 2;
 
 Actor.main(async () => {
     const startTime = Date.now();
