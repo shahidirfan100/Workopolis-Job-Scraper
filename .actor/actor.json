@@ -5,11 +5,13 @@
   "description": "Extract job listings from Workopolis.com with detailed information including title, company, location, description, and posting date. Supports keyword search, location filtering, and pagination.",
   "version": "1.0.0",
   "buildTag": "latest",
-  "dockerfile": "./Dockerfile",
+  "dockerfile": "../Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
   "output": "./output_schema.json",
-  "categories": ["JOBS"],
+  "categories": [
+    "JOBS"
+  ],
   "nodeJsVersion": "22",
   "storages": {
     "dataset": "./dataset_schema.json"

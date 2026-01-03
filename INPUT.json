@@ -1,12 +1,14 @@
 {
   "keyword": "admin",
-  "location": "",
+  "location": "Toronto",
   "posted_date": "anytime",
-  "results_wanted": 20,
+  "results_wanted": 25,
   "max_pages": 10,
   "collectDetails": true,
   "proxyConfiguration": {
     "useApifyProxy": true,
-    "apifyProxyGroups": ["RESIDENTIAL"]
+    "apifyProxyGroups": [
+      "RESIDENTIAL"
+    ]
   }
 }

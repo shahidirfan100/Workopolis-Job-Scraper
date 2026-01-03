@@ -1,20 +1,15 @@
 {
   "title": "Workopolis Jobs Scraper",
-  "description": "Scrape jobs from Workopolis.com listings. Provide either keyword/location OR a Workopolis search URL via Start URLs. The actor paginates and optionally scrapes detail pages.",
+  "description": "Fast & stealthy job scraper for Workopolis.com using Next.js API extraction. Scrape job listings with title, company, location, salary, and full description.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrls": {
       "title": "Start URLs",
       "type": "array",
-      "description": "One or more Workopolis.com search URLs to start scraping from. If provided, these will be used instead of Keyword/Location fields. You can mix URLs with keyword-based searches.",
+      "description": "Optional: One or more Workopolis.com search URLs. If provided, these are used instead of keyword/location.",
       "editor": "requestListSources",
       "example": [
-        {
-          "url": "https://www.workopolis.com/search?q=software+engineer&l=Toronto"
-        }
-      ],
-      "prefill": [
         {
           "url": "https://www.workopolis.com/search?q=software+engineer&l=Toronto"
         }
@@ -23,85 +18,67 @@
     "keyword": {
       "title": "Keyword",
       "type": "string",
-      "description": "Job search keyword(s). Examples: 'Software Developer', 'Marketing Manager', 'Data Analyst', 'Nurse', 'Sales Representative'. Leave empty if using Start URLs.",
+      "description": "Job search keyword(s). Examples: 'Software Developer', 'Data Analyst', 'Nurse'",
       "editor": "textfield",
-      "prefill": "software engineer",
-      "example": "software engineer"
+      "prefill": "software engineer"
     },
     "location": {
       "title": "Location",
       "type": "string",
-      "description": "Geographic location to search in. Examples: 'Toronto', 'Vancouver', 'Calgary', 'Montreal', 'Ottawa', 'Edmonton', 'Quebec City', 'Winnipeg', 'Halifax', 'Victoria'. Leave empty if using Start URLs.",
+      "description": "Location to search. Examples: 'Toronto', 'Vancouver', 'Calgary'",
       "editor": "textfield",
-      "prefill": "Toronto",
-      "example": "Toronto"
+      "prefill": "Toronto"
     },
     "posted_date": {
-      "title": "Posted Date",
+      "title": "Posted Date Filter",
       "type": "string",
-      "description": "Filter jobs by how recently they were posted. Only applies when using Keyword/Location search.",
+      "description": "Filter by posting recency",
       "enum": [
         "anytime",
         "24h",
         "7d",
         "30d"
       ],
-      "prefill": "anytime",
       "default": "anytime",
-      "editor": "select",
-      "example": "7d"
+      "editor": "select"
     },
     "collectDetails": {
-      "title": "Collect job details",
+      "title": "Collect Full Descriptions",
       "type": "boolean",
-      "description": "If enabled, the scraper will visit each job's detail page to extract the full description, salary information, and other detailed fields. If disabled, only basic information from the listing page will be collected.",
-      "editor": "checkbox",
+      "description": "Fetch full job descriptions from detail pages. Disable for faster scraping.",
       "default": true,
-      "example": true
+      "editor": "checkbox"
     },
     "results_wanted": {
-      "title": "Maximum number of jobs",
+      "title": "Maximum Jobs",
       "type": "integer",
-      "description": "The maximum number of jobs to collect. The actor will stop after reaching this limit.",
+      "description": "Maximum number of jobs to collect",
       "minimum": 1,
-      "default": 50,
-      "editor": "number",
-      "example": 100
+      "maximum": 5000,
+      "default": 100,
+      "editor": "number"
     },
     "max_pages": {
-      "title": "Maximum number of pages",
+      "title": "Maximum Pages",
       "type": "integer",
-      "description": "A safety cap on the number of search result pages to visit. This prevents the actor from running indefinitely.",
+      "description": "Safety limit on pages to crawl",
       "minimum": 1,
-      "default": 10,
-      "editor": "number",
-      "example": 5
+      "maximum": 200,
+      "default": 50,
+      "editor": "number"
     },
     "proxyConfiguration": {
-      "title": "Proxy configuration",
+      "title": "Proxy Configuration",
       "type": "object",
-      "description": "Proxy settings for the scraper. Using Apify Proxy with RESIDENTIAL proxies is strongly recommended to avoid being blocked.",
+      "description": "Proxy settings. RESIDENTIAL proxies recommended.",
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
       }
-    },
-    "cookies": {
-      "title": "Custom cookies (raw header)",
-      "type": "string",
-      "description": "Optional raw 'Cookie' header string. Can help bypass consent banners or maintain session state. Format: 'cookie1=value1; cookie2=value2'",
-      "editor": "textfield",
-      "example": "sessionid=abc123; consent=accepted"
-    },
-    "cookiesJson": {
-      "title": "Custom cookies (JSON)",
-      "type": "string",
-      "description": "Optional JSON-formatted cookies. Accepts an array (e.g., [{\"name\":\"sessionid\",\"value\":\"abc123\"}]) or an object map (e.g., {\"sessionid\":\"abc123\"}).",
-      "editor": "textarea",
-      "example": "{\"sessionid\":\"abc123\",\"consent\":\"accepted\"}"
     }
   },
-  "required": [],
-  "additionalProperties": false
+  "required": []
 }
