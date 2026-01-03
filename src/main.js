@@ -16,9 +16,9 @@ const USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 ];
 
-const MIN_DELAY_MS = 300;
-const MAX_DELAY_MS = 800;
-const MAX_RETRIES = 3;
+const MIN_DELAY_MS = 100;
+const MAX_DELAY_MS = 300;
+const MAX_RETRIES = 2;
 
 Actor.main(async () => {
     const startTime = Date.now();
@@ -265,24 +265,15 @@ Actor.main(async () => {
     /**
      * Parse job from API/JSON response
      */
-    const parseJob = (job, viewJobData = null, debug = false) => {
-        // Debug: Log first job structure
-        if (debug) {
-            log.info(`Job structure keys: ${Object.keys(job).join(', ')}`);
-            log.info(`Job sample: ${JSON.stringify(job).substring(0, 500)}`);
-        }
-
+    const parseJob = (job, viewJobData = null) => {
         // Get full description from viewJobData if this is the selected job
         let description_html = null;
         let description_text = null;
 
         if (viewJobData && viewJobData.jobKey === job.jobKey) {
-            // Correct field name: jobDescriptionHtml
             const rawHtml = viewJobData.jobDescriptionHtml || viewJobData.description || null;
             if (rawHtml) {
-                // Sanitize HTML - keep only semantic tags
                 description_html = sanitizeHtml(rawHtml);
-                // Convert to clean readable text
                 description_text = htmlToCleanText(rawHtml);
             }
         }
@@ -384,75 +375,41 @@ Actor.main(async () => {
     };
 
     /**
-     * Fetch job details via Next.js API with HTML fallback
+     * Fetch job details via HTML page (fastest working method)
      */
-    const fetchJobDetail = async (buildId, jobKey, debugFirst = false) => {
-        // Try 1: Next.js JSON API
-        try {
-            const jsonUrl = `https://www.workopolis.com/_next/data/${buildId}/jobsearch/viewjob/${jobKey}.json`;
-            const response = await fetchWithRetry(jsonUrl, { referer: 'https://www.workopolis.com/search' });
-            const data = JSON.parse(response.body);
-            const viewJobData = data.pageProps?.viewJobData;
-
-            if (debugFirst) {
-                log.info(`Detail API response keys: ${Object.keys(data.pageProps || {}).join(', ')}`);
-                if (viewJobData) {
-                    log.info(`viewJobData keys in detail: ${Object.keys(viewJobData).join(', ')}`);
-                }
-            }
-
-            if (viewJobData && viewJobData.jobDescriptionHtml) {
-                return viewJobData;
-            }
-
-            // If no description in JSON, log and try HTML fallback
-            if (debugFirst) {
-                log.warning(`No jobDescriptionHtml in JSON API response for ${jobKey}`);
-            }
-        } catch (error) {
-            log.debug(`JSON API failed for ${jobKey}: ${error.message}`);
-        }
-
-        // Try 2: HTML page with Cheerio fallback
+    const fetchJobDetail = async (jobKey) => {
         try {
             const htmlUrl = `https://www.workopolis.com/jobsearch/viewjob/${jobKey}`;
             const response = await fetchWithRetry(htmlUrl, { referer: 'https://www.workopolis.com/search' });
             const $ = cheerio.load(response.body);
 
-            // Try to extract from __NEXT_DATA__ in HTML
+            // Extract from __NEXT_DATA__ in HTML (most reliable)
             const nextDataScript = $('#__NEXT_DATA__').html();
             if (nextDataScript) {
                 try {
                     const nextData = JSON.parse(nextDataScript);
                     const viewJobData = nextData.props?.pageProps?.viewJobData;
                     if (viewJobData && viewJobData.jobDescriptionHtml) {
-                        if (debugFirst) log.info('Got description from HTML __NEXT_DATA__');
                         return viewJobData;
                     }
-                } catch (e) {
-                    log.debug('Failed to parse __NEXT_DATA__ from HTML');
-                }
+                } catch (e) { /* ignore parse errors */ }
             }
 
-            // Try direct HTML parsing as last resort
+            // Fallback: direct HTML parsing
             const descriptionHtml = $('[data-testid="viewJobBodyJobFullDescriptionContent"]').html() ||
                 $('.job-description').html() ||
-                $('[data-testid="job-description"]').html() ||
-                $('article').html();
+                $('[data-testid="job-description"]').html();
 
             if (descriptionHtml) {
-                if (debugFirst) log.info('Got description from HTML parsing');
                 return {
                     jobKey,
                     jobDescriptionHtml: descriptionHtml,
-                    employerName: $('[data-testid="employer-name"]').text().trim() ||
-                        $('.company-name').text().trim() || null,
-                    formattedLocation: $('[data-testid="location"]').text().trim() ||
-                        $('.location').text().trim() || null,
+                    employerName: $('[data-testid="employer-name"]').text().trim() || null,
+                    formattedLocation: $('[data-testid="location"]').text().trim() || null,
                 };
             }
         } catch (error) {
-            log.debug(`HTML fallback failed for ${jobKey}: ${error.message}`);
+            // Silent fail - will return null
         }
 
         return null;
@@ -496,11 +453,7 @@ Actor.main(async () => {
         const nextData = extractNextData(response.body);
 
         if (!nextData) {
-            log.error('Could not extract __NEXT_DATA__. Site structure may have changed.');
-            // Save first 5000 chars for debugging
-            const debugHtml = response.body?.substring(0, 5000) || 'Empty response';
-            log.warning(`Response preview: ${debugHtml.substring(0, 500)}...`);
-            await Actor.setValue('DEBUG_HTML', response.body, { contentType: 'text/html' });
+            log.error('Could not extract __NEXT_DATA__. Site may have changed or be blocking.');
             return;
         }
 
@@ -508,14 +461,11 @@ Actor.main(async () => {
         const pageProps = nextData.props?.pageProps;
 
         if (!pageProps) {
-            log.error('No pageProps found in __NEXT_DATA__');
-            log.warning(`__NEXT_DATA__ keys: ${Object.keys(nextData).join(', ')}`);
-            log.warning(`props keys: ${Object.keys(nextData.props || {}).join(', ')}`);
-            await Actor.setValue('DEBUG_NEXT_DATA', JSON.stringify(nextData, null, 2), { contentType: 'application/json' });
+            log.error('No pageProps found - unexpected page structure');
             return;
         }
 
-        log.info(`Extracted buildId: ${buildId}`);
+        log.info(`BuildId: ${buildId}`);
 
         // Extract jobs from first page
         const pageJobs = pageProps.jobs || [];
@@ -524,20 +474,8 @@ Actor.main(async () => {
 
         log.info(`Page 1: Found ${pageJobs.length} jobs`);
 
-        // Log if no jobs found
         if (pageJobs.length === 0) {
-            log.warning('No jobs found on first page. Checking pageProps structure...');
-            log.warning(`pageProps keys: ${Object.keys(pageProps).join(', ')}`);
-            await Actor.setValue('DEBUG_PAGE_PROPS', JSON.stringify(pageProps, null, 2), { contentType: 'application/json' });
-        } else {
-            // Debug: Log first job structure to understand field names
-            const firstJob = pageJobs[0];
-            log.info(`First job keys: ${Object.keys(firstJob).join(', ')}`);
-            if (viewJobData) {
-                log.info(`viewJobData keys: ${Object.keys(viewJobData).join(', ')}`);
-            }
-            // Save full structure for debugging
-            await Actor.setValue('DEBUG_FIRST_JOB', JSON.stringify({ firstJob, viewJobData }, null, 2), { contentType: 'application/json' });
+            log.warning('No jobs found on first page');
         }
 
         for (const job of pageJobs) {
@@ -545,8 +483,7 @@ Actor.main(async () => {
             if (jobs.length >= RESULTS_WANTED) break;
 
             seenJobKeys.add(job.jobKey);
-            // Pass debug=true for first job
-            const parsedJob = parseJob(job, viewJobData, jobs.length === 0);
+            const parsedJob = parseJob(job, viewJobData);
             jobs.push(parsedJob);
         }
 
@@ -554,11 +491,10 @@ Actor.main(async () => {
         currentCursor = cursors['2'] || null;
         pageNum = 1;
 
-        log.info(`After page 1: ${jobs.length} jobs collected, nextCursor: ${currentCursor ? 'yes' : 'no'}`);
+        log.info(`Collected ${jobs.length} jobs, ${currentCursor ? 'more pages available' : 'no more pages'}`);
 
     } catch (error) {
         log.error(`Failed to fetch initial page: ${error.message}`);
-        log.error(`Error stack: ${error.stack}`);
         return;
     }
 
@@ -667,66 +603,41 @@ Actor.main(async () => {
         }
     };
 
-    if (collectDetails && buildId && jobsNeedingDetails > 0) {
-        log.info(`Fetching details for ${jobsNeedingDetails} jobs missing descriptions...`);
+    if (collectDetails && jobsNeedingDetails > 0) {
+        log.info(`Fetching descriptions for ${jobsNeedingDetails} jobs...`);
 
         let enriched = 0;
-        let debuggedFirst = false;
-        const batchSize = 5; // Process in small batches for stealth
+        const batchSize = 10; // Process 10 in parallel for speed
 
         for (let i = 0; i < jobs.length; i += batchSize) {
             const batch = jobs.slice(i, i + batchSize);
 
-            await Promise.all(batch.map(async (job, idx) => {
-                // Skip jobs that already have description
-                if (job.description_html) {
-                    return;
-                }
+            await Promise.all(batch.map(async (job) => {
+                if (job.description_html) return; // Already has description
 
-                // Debug first detail fetch
-                const isFirstDebug = !debuggedFirst && idx === 0;
-                if (isFirstDebug) debuggedFirst = true;
-
-                const detail = await fetchJobDetail(buildId, job.jobKey, isFirstDebug);
+                const detail = await fetchJobDetail(job.jobKey);
                 if (detail) {
-                    // Correct field: jobDescriptionHtml
                     const rawHtml = detail.jobDescriptionHtml || detail.description || null;
                     if (rawHtml) {
-                        // Sanitize HTML - keep only semantic tags
                         job.description_html = sanitizeHtml(rawHtml);
-                        // Convert to clean readable text
                         job.description_text = htmlToCleanText(rawHtml);
                         enriched++;
                     }
-
-                    // Enrich other fields from detail if missing
+                    // Enrich missing fields
                     if (!job.company && detail.employerName) job.company = detail.employerName;
                     if (!job.datePosted) job.datePosted = detail.datePublished || detail.dateOnIndeed;
                     if (!job.location && detail.formattedLocation) job.location = detail.formattedLocation;
-                    if (!job.salary && detail.compensation) {
-                        job.salary = typeof detail.compensation === 'string' ? detail.compensation :
-                            detail.compensation.text || detail.compensation.basePay || null;
-                    }
-                    if (!job.workSettings && detail.workSettings) {
-                        job.workSettings = Array.isArray(detail.workSettings) ? detail.workSettings.join(', ') : detail.workSettings;
-                    }
                 }
             }));
 
-            // Save incrementally every SAVE_BATCH_SIZE jobs
+            // Save incrementally
             const currentEnd = Math.min(i + batchSize, jobs.length);
             if (currentEnd >= savedCount + SAVE_BATCH_SIZE || currentEnd === jobs.length) {
                 await saveJobsBatch(savedCount, currentEnd);
             }
-
-            // Progress logging every 20 jobs
-            if ((i + batchSize) % 20 === 0 || i + batchSize >= jobs.length) {
-                log.info(`Detail fetch progress: ${Math.min(i + batchSize, jobs.length)}/${jobs.length} | Enriched: ${enriched}`);
-            }
         }
 
-        log.info(`Enriched ${enriched} additional jobs with descriptions`);
-        log.info(`Total jobs with descriptions: ${jobsWithDescription + enriched}/${jobs.length}`);
+        log.info(`Enriched ${enriched}/${jobsNeedingDetails} jobs with descriptions`);
     } else if (!collectDetails) {
         log.info('Skipping detail page fetches (collectDetails=false) for faster execution');
     } else if (jobsNeedingDetails === 0) {
