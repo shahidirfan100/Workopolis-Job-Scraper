@@ -257,11 +257,28 @@ Actor.main(async () => {
 
     // ======================== PHASE 1: Initial Page ========================
     try {
+        log.info('Fetching initial page...');
         const response = await fetchWithRetry(startSearchUrl);
+
+        // Log response diagnostics
+        log.info(`Response received: ${response.statusCode} | Body length: ${response.body?.length || 0} chars`);
+
+        // Check for blocking
+        if (response.body?.includes('blocked') || response.body?.includes('captcha') || response.body?.includes('Access Denied')) {
+            log.error('Request appears to be blocked. Try using RESIDENTIAL proxies.');
+            // Save HTML for debugging
+            await Actor.setValue('BLOCKED_PAGE', response.body, { contentType: 'text/html' });
+            return;
+        }
+
         const nextData = extractNextData(response.body);
 
         if (!nextData) {
             log.error('Could not extract __NEXT_DATA__. Site structure may have changed.');
+            // Save first 5000 chars for debugging
+            const debugHtml = response.body?.substring(0, 5000) || 'Empty response';
+            log.warning(`Response preview: ${debugHtml.substring(0, 500)}...`);
+            await Actor.setValue('DEBUG_HTML', response.body, { contentType: 'text/html' });
             return;
         }
 
@@ -270,6 +287,9 @@ Actor.main(async () => {
 
         if (!pageProps) {
             log.error('No pageProps found in __NEXT_DATA__');
+            log.warning(`__NEXT_DATA__ keys: ${Object.keys(nextData).join(', ')}`);
+            log.warning(`props keys: ${Object.keys(nextData.props || {}).join(', ')}`);
+            await Actor.setValue('DEBUG_NEXT_DATA', JSON.stringify(nextData, null, 2), { contentType: 'application/json' });
             return;
         }
 
@@ -281,6 +301,13 @@ Actor.main(async () => {
         const cursors = pageProps.pageCursors || {};
 
         log.info(`Page 1: Found ${pageJobs.length} jobs`);
+
+        // Log if no jobs found
+        if (pageJobs.length === 0) {
+            log.warning('No jobs found on first page. Checking pageProps structure...');
+            log.warning(`pageProps keys: ${Object.keys(pageProps).join(', ')}`);
+            await Actor.setValue('DEBUG_PAGE_PROPS', JSON.stringify(pageProps, null, 2), { contentType: 'application/json' });
+        }
 
         for (const job of pageJobs) {
             if (seenJobKeys.has(job.jobKey)) continue;
@@ -295,8 +322,11 @@ Actor.main(async () => {
         currentCursor = cursors['2'] || null;
         pageNum = 1;
 
+        log.info(`After page 1: ${jobs.length} jobs collected, nextCursor: ${currentCursor ? 'yes' : 'no'}`);
+
     } catch (error) {
         log.error(`Failed to fetch initial page: ${error.message}`);
+        log.error(`Error stack: ${error.stack}`);
         return;
     }
 
