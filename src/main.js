@@ -6,6 +6,7 @@
 import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
+import * as cheerio from 'cheerio';
 
 // Constants for stealth and performance
 const USER_AGENTS = [
@@ -173,6 +174,95 @@ Actor.main(async () => {
     };
 
     /**
+     * Sanitize HTML - keep only semantic tags, remove attributes
+     */
+    const sanitizeHtml = (html) => {
+        if (!html) return null;
+
+        // Allowed tags for job descriptions
+        const allowedTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'ul', 'ol', 'li', 'strong', 'b', 'em', 'i', 'a', 'div', 'span'];
+
+        let cleaned = html
+            // Remove script/style tags and their content
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            // Remove all attributes except href on anchors
+            .replace(/<(\w+)([^>]*)>/gi, (match, tag, attrs) => {
+                const tagLower = tag.toLowerCase();
+                if (!allowedTags.includes(tagLower)) {
+                    // Convert non-allowed block tags to div, inline to span
+                    const blockTags = ['div', 'section', 'article', 'header', 'footer', 'main', 'aside', 'nav'];
+                    if (blockTags.includes(tagLower)) return '<div>';
+                    return '<span>';
+                }
+                // For anchor tags, keep href
+                if (tagLower === 'a') {
+                    const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+                    return hrefMatch ? `<a href="${hrefMatch[1]}">` : '<a>';
+                }
+                return `<${tagLower}>`;
+            })
+            // Fix closing tags
+            .replace(/<\/(\w+)>/gi, (match, tag) => {
+                const tagLower = tag.toLowerCase();
+                if (!allowedTags.includes(tagLower)) {
+                    const blockTags = ['div', 'section', 'article', 'header', 'footer', 'main', 'aside', 'nav'];
+                    if (blockTags.includes(tagLower)) return '</div>';
+                    return '</span>';
+                }
+                return `</${tagLower}>`;
+            })
+            // Remove empty tags
+            .replace(/<(\w+)>\s*<\/\1>/gi, '')
+            // Normalize whitespace
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        return cleaned || null;
+    };
+
+    /**
+     * Convert HTML to clean readable text with proper formatting
+     */
+    const htmlToCleanText = (html) => {
+        if (!html) return null;
+
+        let text = html
+            // Add line breaks before block elements
+            .replace(/<\/(h[1-6]|p|div|li|tr)>/gi, '</$1>\n')
+            .replace(/<(h[1-6]|p|div)[^>]*>/gi, '\n')
+            // Handle lists - add bullet points
+            .replace(/<li[^>]*>/gi, '\n• ')
+            .replace(/<\/li>/gi, '')
+            // Handle line breaks
+            .replace(/<br\s*\/?>/gi, '\n')
+            // Remove all remaining HTML tags
+            .replace(/<[^>]+>/g, '')
+            // Decode common HTML entities
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/&amp;/gi, '&')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#39;/gi, "'")
+            .replace(/&rsquo;/gi, "'")
+            .replace(/&lsquo;/gi, "'")
+            .replace(/&rdquo;/gi, '"')
+            .replace(/&ldquo;/gi, '"')
+            .replace(/&ndash;/gi, '–')
+            .replace(/&mdash;/gi, '—')
+            .replace(/&bull;/gi, '•')
+            // Clean up whitespace
+            .replace(/[ \t]+/g, ' ')  // Multiple spaces to single
+            .replace(/\n[ \t]+/g, '\n')  // Remove leading spaces on lines
+            .replace(/[ \t]+\n/g, '\n')  // Remove trailing spaces on lines
+            .replace(/\n{3,}/g, '\n\n')  // Max 2 consecutive newlines
+            .trim();
+
+        return text || null;
+    };
+
+    /**
      * Parse job from API/JSON response
      */
     const parseJob = (job, viewJobData = null, debug = false) => {
@@ -188,12 +278,12 @@ Actor.main(async () => {
 
         if (viewJobData && viewJobData.jobKey === job.jobKey) {
             // Correct field name: jobDescriptionHtml
-            description_html = viewJobData.jobDescriptionHtml || viewJobData.description || null;
-            if (description_html) {
-                description_text = description_html
-                    .replace(/<[^>]+>/g, ' ')
-                    .replace(/\s+/g, ' ')
-                    .trim();
+            const rawHtml = viewJobData.jobDescriptionHtml || viewJobData.description || null;
+            if (rawHtml) {
+                // Sanitize HTML - keep only semantic tags
+                description_html = sanitizeHtml(rawHtml);
+                // Convert to clean readable text
+                description_text = htmlToCleanText(rawHtml);
             }
         }
 
@@ -265,6 +355,14 @@ Actor.main(async () => {
             workSettings = Array.isArray(viewJobData.workSettings) ? viewJobData.workSettings.join(', ') : viewJobData.workSettings;
         }
 
+        // Format requirements - top 5 items as comma-separated string
+        let requirements = null;
+        if (job.requirements && Array.isArray(job.requirements)) {
+            requirements = job.requirements.slice(0, 5).join(', ');
+        } else if (typeof job.requirements === 'string') {
+            requirements = job.requirements;
+        }
+
         return {
             url: `https://www.workopolis.com/jobsearch/viewjob/${job.jobKey}`,
             jobKey: job.jobKey,
@@ -277,7 +375,7 @@ Actor.main(async () => {
             datePosted,
             benefits,
             snippet: job.snippet || null,
-            requirements: job.requirements || null,
+            requirements,
             description_html,
             description_text,
             _source: 'workopolis.com',
@@ -286,18 +384,78 @@ Actor.main(async () => {
     };
 
     /**
-     * Fetch job details via Next.js API
+     * Fetch job details via Next.js API with HTML fallback
      */
-    const fetchJobDetail = async (buildId, jobKey) => {
+    const fetchJobDetail = async (buildId, jobKey, debugFirst = false) => {
+        // Try 1: Next.js JSON API
         try {
-            const url = `https://www.workopolis.com/_next/data/${buildId}/jobsearch/viewjob/${jobKey}.json`;
-            const response = await fetchWithRetry(url, { referer: 'https://www.workopolis.com/search' });
+            const jsonUrl = `https://www.workopolis.com/_next/data/${buildId}/jobsearch/viewjob/${jobKey}.json`;
+            const response = await fetchWithRetry(jsonUrl, { referer: 'https://www.workopolis.com/search' });
             const data = JSON.parse(response.body);
-            return data.pageProps?.viewJobData || null;
+            const viewJobData = data.pageProps?.viewJobData;
+
+            if (debugFirst) {
+                log.info(`Detail API response keys: ${Object.keys(data.pageProps || {}).join(', ')}`);
+                if (viewJobData) {
+                    log.info(`viewJobData keys in detail: ${Object.keys(viewJobData).join(', ')}`);
+                }
+            }
+
+            if (viewJobData && viewJobData.jobDescriptionHtml) {
+                return viewJobData;
+            }
+
+            // If no description in JSON, log and try HTML fallback
+            if (debugFirst) {
+                log.warning(`No jobDescriptionHtml in JSON API response for ${jobKey}`);
+            }
         } catch (error) {
-            log.debug(`Failed to fetch detail for ${jobKey}: ${error.message}`);
-            return null;
+            log.debug(`JSON API failed for ${jobKey}: ${error.message}`);
         }
+
+        // Try 2: HTML page with Cheerio fallback
+        try {
+            const htmlUrl = `https://www.workopolis.com/jobsearch/viewjob/${jobKey}`;
+            const response = await fetchWithRetry(htmlUrl, { referer: 'https://www.workopolis.com/search' });
+            const $ = cheerio.load(response.body);
+
+            // Try to extract from __NEXT_DATA__ in HTML
+            const nextDataScript = $('#__NEXT_DATA__').html();
+            if (nextDataScript) {
+                try {
+                    const nextData = JSON.parse(nextDataScript);
+                    const viewJobData = nextData.props?.pageProps?.viewJobData;
+                    if (viewJobData && viewJobData.jobDescriptionHtml) {
+                        if (debugFirst) log.info('Got description from HTML __NEXT_DATA__');
+                        return viewJobData;
+                    }
+                } catch (e) {
+                    log.debug('Failed to parse __NEXT_DATA__ from HTML');
+                }
+            }
+
+            // Try direct HTML parsing as last resort
+            const descriptionHtml = $('[data-testid="viewJobBodyJobFullDescriptionContent"]').html() ||
+                $('.job-description').html() ||
+                $('[data-testid="job-description"]').html() ||
+                $('article').html();
+
+            if (descriptionHtml) {
+                if (debugFirst) log.info('Got description from HTML parsing');
+                return {
+                    jobKey,
+                    jobDescriptionHtml: descriptionHtml,
+                    employerName: $('[data-testid="employer-name"]').text().trim() ||
+                        $('.company-name').text().trim() || null,
+                    formattedLocation: $('[data-testid="location"]').text().trim() ||
+                        $('.location').text().trim() || null,
+                };
+            }
+        } catch (error) {
+            log.debug(`HTML fallback failed for ${jobKey}: ${error.message}`);
+        }
+
+        return null;
     };
 
     // ======================== MAIN SCRAPING LOGIC ========================
@@ -495,30 +653,49 @@ Actor.main(async () => {
 
     log.info(`Jobs with description from listing: ${jobsWithDescription}/${jobs.length}`);
 
+    // Track which jobs have been saved
+    let savedCount = 0;
+    const SAVE_BATCH_SIZE = 10;
+
+    // Helper to save a batch of jobs
+    const saveJobsBatch = async (startIdx, endIdx) => {
+        const batch = jobs.slice(startIdx, endIdx);
+        if (batch.length > 0) {
+            await Dataset.pushData(batch);
+            savedCount = endIdx;
+            log.info(`✓ Saved jobs ${startIdx + 1}-${endIdx} to dataset (${savedCount}/${jobs.length})`);
+        }
+    };
+
     if (collectDetails && buildId && jobsNeedingDetails > 0) {
         log.info(`Fetching details for ${jobsNeedingDetails} jobs missing descriptions...`);
 
         let enriched = 0;
+        let debuggedFirst = false;
         const batchSize = 5; // Process in small batches for stealth
 
         for (let i = 0; i < jobs.length; i += batchSize) {
             const batch = jobs.slice(i, i + batchSize);
 
-            await Promise.all(batch.map(async (job) => {
+            await Promise.all(batch.map(async (job, idx) => {
                 // Skip jobs that already have description
                 if (job.description_html) {
                     return;
                 }
 
-                const detail = await fetchJobDetail(buildId, job.jobKey);
+                // Debug first detail fetch
+                const isFirstDebug = !debuggedFirst && idx === 0;
+                if (isFirstDebug) debuggedFirst = true;
+
+                const detail = await fetchJobDetail(buildId, job.jobKey, isFirstDebug);
                 if (detail) {
                     // Correct field: jobDescriptionHtml
-                    job.description_html = detail.jobDescriptionHtml || detail.description || null;
-                    if (job.description_html) {
-                        job.description_text = job.description_html
-                            .replace(/<[^>]+>/g, ' ')
-                            .replace(/\s+/g, ' ')
-                            .trim();
+                    const rawHtml = detail.jobDescriptionHtml || detail.description || null;
+                    if (rawHtml) {
+                        // Sanitize HTML - keep only semantic tags
+                        job.description_html = sanitizeHtml(rawHtml);
+                        // Convert to clean readable text
+                        job.description_text = htmlToCleanText(rawHtml);
                         enriched++;
                     }
 
@@ -536,9 +713,15 @@ Actor.main(async () => {
                 }
             }));
 
+            // Save incrementally every SAVE_BATCH_SIZE jobs
+            const currentEnd = Math.min(i + batchSize, jobs.length);
+            if (currentEnd >= savedCount + SAVE_BATCH_SIZE || currentEnd === jobs.length) {
+                await saveJobsBatch(savedCount, currentEnd);
+            }
+
             // Progress logging every 20 jobs
             if ((i + batchSize) % 20 === 0 || i + batchSize >= jobs.length) {
-                log.info(`Detail fetch progress: ${Math.min(i + batchSize, jobs.length)}/${jobs.length}`);
+                log.info(`Detail fetch progress: ${Math.min(i + batchSize, jobs.length)}/${jobs.length} | Enriched: ${enriched}`);
             }
         }
 
@@ -550,15 +733,13 @@ Actor.main(async () => {
         log.info('All jobs already have descriptions from listing data - no detail fetches needed!');
     }
 
-    // ======================== PHASE 4: Save Results ========================
+    // ======================== PHASE 4: Save Remaining Results ========================
+    if (savedCount < jobs.length) {
+        await saveJobsBatch(savedCount, jobs.length);
+    }
+
     if (jobs.length > 0) {
-        // Push in batches for efficiency
-        const batchSize = 50;
-        for (let i = 0; i < jobs.length; i += batchSize) {
-            const batch = jobs.slice(i, i + batchSize);
-            await Dataset.pushData(batch);
-        }
-        log.info(`✓ Saved ${jobs.length} jobs to dataset`);
+        log.info(`✓ All ${jobs.length} jobs saved to dataset`);
     } else {
         log.warning('No jobs scraped. Check search parameters or site availability.');
     }
