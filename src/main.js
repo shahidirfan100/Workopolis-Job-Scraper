@@ -106,26 +106,29 @@ Actor.main(async () => {
      * Make HTTP request with retries and stealth
      */
     const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES) => {
+        // Extract referer separately - it's not a valid gotScraping option
+        const { referer, ...restOptions } = options;
+
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
                 await randomDelay();
                 const response = await gotScraping({
                     url,
-                    headers: buildHeaders(options.referer),
+                    headers: buildHeaders(referer),
                     proxyUrl,
                     timeout: { request: 30000 },
                     retry: { limit: 0 },
-                    ...options,
+                    ...restOptions,
                 });
                 return response;
             } catch (error) {
                 const status = error.response?.statusCode;
                 if (status === 403 || status === 429) {
                     log.warning(`Blocked (${status}) on attempt ${attempt}/${retries}: ${url}`);
-                    if (attempt < retries) {
-                        await new Promise(r => setTimeout(r, 2000 * attempt)); // Exponential backoff
-                    }
-                } else if (attempt === retries) {
+                }
+                if (attempt < retries) {
+                    await new Promise(r => setTimeout(r, 2000 * attempt)); // Exponential backoff
+                } else {
                     throw error;
                 }
             }
@@ -172,21 +175,33 @@ Actor.main(async () => {
     /**
      * Parse job from API/JSON response
      */
-    const parseJob = (job, viewJobData = null) => {
+    const parseJob = (job, viewJobData = null, debug = false) => {
+        // Debug: Log first job structure
+        if (debug) {
+            log.info(`Job structure keys: ${Object.keys(job).join(', ')}`);
+            log.info(`Job sample: ${JSON.stringify(job).substring(0, 500)}`);
+        }
+
         // Get full description from viewJobData if this is the selected job
         let description_html = null;
         let description_text = null;
 
         if (viewJobData && viewJobData.jobKey === job.jobKey) {
-            description_html = viewJobData.description || viewJobData.jobDescription || null;
+            description_html = viewJobData.description || viewJobData.jobDescription || viewJobData.formattedDescription || null;
             if (description_html) {
-                // Simple HTML to text conversion
                 description_text = description_html
                     .replace(/<[^>]+>/g, ' ')
                     .replace(/\s+/g, ' ')
                     .trim();
             }
         }
+
+        // Extract company - try multiple field paths
+        let company = null;
+        if (job.company) {
+            company = typeof job.company === 'string' ? job.company : job.company.name || job.company.displayName;
+        }
+        company = company || job.companyName || job.employer || job.hiringOrganization?.name || null;
 
         // Extract salary info
         let salary = null;
@@ -203,17 +218,40 @@ Actor.main(async () => {
                 }
             }
         }
+        // Fallback to string salary
+        salary = salary || job.salary || job.salaryText || job.compensation || null;
+
+        // Extract date posted - try multiple fields
+        const datePosted = job.datePosted || job.postingDate || job.date || job.pubDate || job.postedDate || null;
+
+        // Extract location - handle object or string
+        let location = null;
+        if (job.location) {
+            location = typeof job.location === 'string' ? job.location :
+                job.location.displayName || job.location.city ||
+                [job.location.city, job.location.province].filter(Boolean).join(', ');
+        }
+        location = location || job.formattedLocation || job.jobLocation || null;
+
+        // Extract employment type
+        let employmentType = null;
+        if (job.jobTypes && Array.isArray(job.jobTypes)) {
+            employmentType = job.jobTypes.join(', ');
+        } else if (job.employmentType) {
+            employmentType = Array.isArray(job.employmentType) ? job.employmentType.join(', ') : job.employmentType;
+        }
+        employmentType = employmentType || job.jobType || job.type || null;
 
         return {
             url: `https://www.workopolis.com/jobsearch/viewjob/${job.jobKey}`,
             jobKey: job.jobKey,
-            title: job.title || null,
-            company: job.company?.name || job.companyName || null,
-            location: job.location || null,
+            title: job.title || job.jobTitle || null,
+            company,
+            location,
             salary,
-            employmentType: job.jobTypes?.join(', ') || null,
-            datePosted: job.datePosted || job.postingDate || null,
-            requirements: job.requirements || null,
+            employmentType,
+            datePosted,
+            requirements: job.requirements || job.qualifications || null,
             description_html,
             description_text,
             _source: 'workopolis.com',
@@ -307,6 +345,15 @@ Actor.main(async () => {
             log.warning('No jobs found on first page. Checking pageProps structure...');
             log.warning(`pageProps keys: ${Object.keys(pageProps).join(', ')}`);
             await Actor.setValue('DEBUG_PAGE_PROPS', JSON.stringify(pageProps, null, 2), { contentType: 'application/json' });
+        } else {
+            // Debug: Log first job structure to understand field names
+            const firstJob = pageJobs[0];
+            log.info(`First job keys: ${Object.keys(firstJob).join(', ')}`);
+            if (viewJobData) {
+                log.info(`viewJobData keys: ${Object.keys(viewJobData).join(', ')}`);
+            }
+            // Save full structure for debugging
+            await Actor.setValue('DEBUG_FIRST_JOB', JSON.stringify({ firstJob, viewJobData }, null, 2), { contentType: 'application/json' });
         }
 
         for (const job of pageJobs) {
@@ -314,7 +361,8 @@ Actor.main(async () => {
             if (jobs.length >= RESULTS_WANTED) break;
 
             seenJobKeys.add(job.jobKey);
-            const parsedJob = parseJob(job, viewJobData);
+            // Pass debug=true for first job
+            const parsedJob = parseJob(job, viewJobData, jobs.length === 0);
             jobs.push(parsedJob);
         }
 
