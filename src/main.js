@@ -35,11 +35,11 @@ Actor.main(async () => {
     }
 
     let {
-        keyword = '',
-        location = '',
+        keyword = 'software engineer',
+        location = 'Toronto',
         posted_date = 'anytime',
-        results_wanted: RESULTS_WANTED_RAW = 100,
-        max_pages: MAX_PAGES_RAW = 999,
+        results_wanted: RESULTS_WANTED_RAW = 20,
+        max_pages: MAX_PAGES_RAW = 10,
         collectDetails = true,
         startUrls,
         proxyConfiguration,

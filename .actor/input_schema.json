@@ -20,6 +20,7 @@
       "type": "string",
       "description": "Job search keyword(s). Examples: 'Software Developer', 'Data Analyst', 'Nurse'",
       "editor": "textfield",
+      "default": "software engineer",
       "prefill": "software engineer"
     },
     "location": {
@@ -27,6 +28,7 @@
       "type": "string",
       "description": "Location to search. Examples: 'Toronto', 'Vancouver', 'Calgary'",
       "editor": "textfield",
+      "default": "Toronto",
       "prefill": "Toronto"
     },
     "posted_date": {
@@ -40,6 +42,7 @@
         "30d"
       ],
       "default": "anytime",
+      "prefill": "anytime",
       "editor": "select"
     },
     "collectDetails": {
@@ -47,6 +50,7 @@
       "type": "boolean",
       "description": "Fetch full job descriptions from detail pages. Disable for faster scraping.",
       "default": true,
+      "prefill": true,
       "editor": "checkbox"
     },
     "results_wanted": {
@@ -55,7 +59,8 @@
       "description": "Maximum number of jobs to collect",
       "minimum": 1,
       "maximum": 5000,
-      "default": 100,
+      "default": 20,
+      "prefill": 20,
       "editor": "number"
     },
     "max_pages": {
@@ -64,7 +69,8 @@
       "description": "Safety limit on pages to crawl",
       "minimum": 1,
       "maximum": 200,
-      "default": 50,
+      "default": 10,
+      "prefill": 10,
       "editor": "number"
     },
     "proxyConfiguration": {

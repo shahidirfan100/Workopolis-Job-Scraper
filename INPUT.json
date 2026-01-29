@@ -1,8 +1,8 @@
 {
-  "keyword": "admin",
+  "keyword": "software engineer",
   "location": "Toronto",
   "posted_date": "anytime",
-  "results_wanted": 25,
+  "results_wanted": 20,
   "max_pages": 10,
   "collectDetails": true,
   "proxyConfiguration": {
