@@ -18,6 +18,8 @@ const USER_AGENTS = [
 const MIN_DELAY_MS = 500;
 const MAX_DELAY_MS = 1000;
 const MAX_RETRIES = 2;
+const DETAIL_MAX_CONCURRENCY = 20;
+const DETAIL_MAX_RETRIES = 2;
 const STATE_KEY = 'STATE';
 
 Actor.main(async () => {
@@ -40,6 +42,7 @@ Actor.main(async () => {
         posted_date = 'anytime',
         results_wanted: RESULTS_WANTED_RAW = 20,
         max_pages: MAX_PAGES_RAW = 10,
+        detailConcurrency: DETAIL_CONCURRENCY_RAW = DETAIL_MAX_CONCURRENCY,
         collectDetails = true,
         startUrls,
         proxyConfiguration,
@@ -47,6 +50,9 @@ Actor.main(async () => {
 
     const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 20;
     const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
+    const DETAIL_CONCURRENCY = Number.isFinite(+DETAIL_CONCURRENCY_RAW)
+        ? Math.max(1, Math.min(50, +DETAIL_CONCURRENCY_RAW))
+        : DETAIL_MAX_CONCURRENCY;
 
     // Validate posted_date
     const validPostedDates = ['anytime', '24h', '7d', '30d'];
@@ -107,14 +113,17 @@ Actor.main(async () => {
      * Make HTTP request with delay and retries (for listing pages)
      */
     const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES) => {
-        const { referer, ...restOptions } = options;
+        const { referer, headers: customHeaders = {}, ...restOptions } = options;
 
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
                 await randomDelay();
                 const response = await gotScraping({
                     url,
-                    headers: buildHeaders(referer),
+                    headers: {
+                        ...buildHeaders(referer),
+                        ...customHeaders,
+                    },
                     proxyUrl,
                     timeout: { request: 30000 },
                     retry: { limit: 0 },
@@ -141,6 +150,39 @@ Actor.main(async () => {
             }
         }
         throw new Error(`Failed after ${retries} attempts`);
+    };
+
+    /**
+     * Fast API request for detail enrichment (no random delay, short backoff)
+     */
+    const fetchApiFast = async (url, options = {}, retries = DETAIL_MAX_RETRIES) => {
+        const { referer, headers: customHeaders = {}, ...restOptions } = options;
+
+        for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+                const response = await gotScraping({
+                    url,
+                    headers: {
+                        ...buildHeaders(referer),
+                        ...customHeaders,
+                    },
+                    proxyUrl,
+                    timeout: { request: 12000 },
+                    retry: { limit: 0 },
+                    ...restOptions,
+                });
+                return response;
+            } catch (error) {
+                if (attempt < retries) {
+                    const shortBackoff = 500 * attempt;
+                    await new Promise((resolve) => setTimeout(resolve, shortBackoff));
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        throw new Error(`Failed fast API request after ${retries} attempts`);
     };
 
     /**
@@ -172,6 +214,9 @@ Actor.main(async () => {
         const apiUrl = buildApiUrl(activeBuildId, query || 'jobs', activeLocation, cursor);
         const response = await fetchWithRetry(apiUrl, {
             referer: 'https://www.workopolis.com/search',
+            headers: {
+                Accept: 'application/json, text/plain, */*',
+            },
             responseType: 'json',
         });
 
@@ -197,6 +242,9 @@ Actor.main(async () => {
 
         const response = await fetchWithRetry(url.href, {
             referer: 'https://www.workopolis.com/search',
+            headers: {
+                Accept: 'application/json, text/plain, */*',
+            },
             responseType: 'json',
         });
 
@@ -251,29 +299,62 @@ Actor.main(async () => {
         return null;
     };
 
+    const detailCache = new Map();
+    const detailInFlight = new Map();
+
     /**
      * Fast API-only detail fetch (no HTML parsing)
      */
     const fetchJobDetailFromApi = async (jobKey, locale, continueUrl, jobCardTrackingKey = null) => {
         if (!jobKey || !locale || !continueUrl) return null;
-        try {
-            const url = new URL('https://www.workopolis.com/api/next/job');
-            url.searchParams.set('key', jobKey);
-            url.searchParams.set('locale', locale);
-            url.searchParams.set('indeedApplyContinueUrl', continueUrl);
-            if (jobCardTrackingKey) url.searchParams.set('jobCardTrackingKey', jobCardTrackingKey);
 
-            const response = await fetchWithRetry(url.href, {
-                referer: continueUrl,
-                responseType: 'json',
-            }, 3);
+        if (detailCache.has(jobKey)) return detailCache.get(jobKey);
+        if (detailInFlight.has(jobKey)) return detailInFlight.get(jobKey);
 
-            const data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-            if (data?.jobKey === jobKey) return data;
-            return null;
-        } catch (error) {
-            return null;
-        }
+        const requestPromise = (async () => {
+            try {
+                const url = new URL('https://www.workopolis.com/api/next/job');
+                url.searchParams.set('key', jobKey);
+                url.searchParams.set('locale', locale);
+                url.searchParams.set('indeedApplyContinueUrl', continueUrl);
+                if (jobCardTrackingKey) url.searchParams.set('jobCardTrackingKey', jobCardTrackingKey);
+
+                const response = await fetchApiFast(url.href, {
+                    referer: continueUrl,
+                    headers: {
+                        Accept: 'application/json, text/plain, */*',
+                    },
+                    responseType: 'json',
+                });
+
+                const data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+                const normalized = data?.jobKey === jobKey ? data : null;
+                detailCache.set(jobKey, normalized);
+                return normalized;
+            } catch {
+                detailCache.set(jobKey, null);
+                return null;
+            } finally {
+                detailInFlight.delete(jobKey);
+            }
+        })();
+
+        detailInFlight.set(jobKey, requestPromise);
+        return requestPromise;
+    };
+
+    const runWithConcurrency = async (items, concurrency, worker) => {
+        const limit = Math.max(1, concurrency);
+        let index = 0;
+
+        const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+            while (index < items.length) {
+                const currentIndex = index++;
+                await worker(items[currentIndex], currentIndex);
+            }
+        });
+
+        await Promise.all(runners);
     };
 
     /**
@@ -680,50 +761,38 @@ Actor.main(async () => {
     };
 
     if (collectDetails && jobsNeedingDetails > 0) {
-        log.info(`Fetching descriptions for ${jobsNeedingDetails} jobs...`);
+        log.info(`Fetching descriptions for ${jobsNeedingDetails} jobs with concurrency ${DETAIL_CONCURRENCY}...`);
 
         let enriched = 0;
-        const batchSize = 10; // Process 10 in parallel for speed
+        const jobsWithoutDescription = jobs.filter((job) => !job.description_html || !job.description_text);
+        await runWithConcurrency(jobsWithoutDescription, DETAIL_CONCURRENCY, async (job) => {
+            const jobMeta = jobMetaByKey.get(job.jobKey) || {};
+            const detail = await fetchJobDetailFromApi(
+                job.jobKey,
+                apiLocale,
+                startSearchUrl,
+                jobMeta.jobCardTrackingKey,
+            );
+            if (!detail) return;
 
-        for (let i = 0; i < jobs.length; i += batchSize) {
-            const batch = jobs.slice(i, i + batchSize);
-
-            await Promise.all(batch.map(async (job) => {
-                if (job.description_html) return; // Already has description
-
-                const jobMeta = jobMetaByKey.get(job.jobKey) || {};
-                const detail = await fetchJobDetailFromApi(
-                    job.jobKey,
-                    apiLocale,
-                    startSearchUrl,
-                    jobMeta.jobCardTrackingKey,
-                );
-                if (detail) {
-                    const rawHtml = detail.jobDescriptionHtml || detail.description || null;
-                    if (rawHtml) {
-                        job.description_html = sanitizeHtml(rawHtml);
-                        job.description_text = htmlToCleanText(rawHtml);
-                        enriched++;
-                    }
-                    // Enrich missing fields
-                    if (!job.company && detail.employerName) job.company = detail.employerName;
-                    if (!job.datePosted) job.datePosted = detail.datePublished || detail.dateOnIndeed;
-                    if (!job.location && detail.formattedLocation) job.location = detail.formattedLocation;
-                }
-            }));
-
-            // Save incrementally
-            const currentEnd = Math.min(i + batchSize, jobs.length);
-            if (currentEnd >= savedCount + SAVE_BATCH_SIZE || currentEnd === jobs.length) {
-                await saveJobsBatch(savedCount, currentEnd);
+            const rawHtml = detail.jobDescriptionHtml || detail.description || null;
+            if (rawHtml) {
+                job.description_html = sanitizeHtml(rawHtml);
+                job.description_text = htmlToCleanText(rawHtml);
+                enriched++;
             }
-        }
+            if (!job.company && detail.employerName) job.company = detail.employerName;
+            if (!job.datePosted) job.datePosted = detail.datePublished || detail.dateOnIndeed;
+            if (!job.location && detail.formattedLocation) job.location = detail.formattedLocation;
+        });
 
-        // Second pass for reliability: retry any missing descriptions sequentially
+        // Second pass for reliability with lower concurrency
         const missingAfterFirstPass = jobs.filter((job) => !job.description_html || !job.description_text);
         if (missingAfterFirstPass.length > 0) {
-            log.info(`Retrying API details for ${missingAfterFirstPass.length} jobs still missing descriptions...`);
-            for (const job of missingAfterFirstPass) {
+            const retryConcurrency = Math.max(2, Math.floor(DETAIL_CONCURRENCY / 2));
+            log.info(`Retrying API details for ${missingAfterFirstPass.length} jobs with concurrency ${retryConcurrency}...`);
+            await runWithConcurrency(missingAfterFirstPass, retryConcurrency, async (job) => {
+                detailCache.delete(job.jobKey);
                 const jobMeta = jobMetaByKey.get(job.jobKey) || {};
                 const detail = await fetchJobDetailFromApi(
                     job.jobKey,
@@ -731,7 +800,7 @@ Actor.main(async () => {
                     startSearchUrl,
                     jobMeta.jobCardTrackingKey,
                 );
-                if (!detail) continue;
+                if (!detail) return;
 
                 const rawHtml = detail.jobDescriptionHtml || detail.description || null;
                 if (rawHtml) {
@@ -741,7 +810,7 @@ Actor.main(async () => {
                 if (!job.company && detail.employerName) job.company = detail.employerName;
                 if (!job.datePosted) job.datePosted = detail.datePublished || detail.dateOnIndeed;
                 if (!job.location && detail.formattedLocation) job.location = detail.formattedLocation;
-            }
+            });
         }
 
         log.info(`Enriched ${enriched}/${jobsNeedingDetails} jobs with descriptions`);
