@@ -6,6 +6,8 @@
 import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 // Constants for stealth and performance
 const USER_AGENTS = [
@@ -36,11 +38,26 @@ Actor.main(async () => {
         input = {};
     }
 
+    const isLocalRun = process.env.APIFY_IS_AT_HOME !== '1';
+    if (isLocalRun && Object.prototype.hasOwnProperty.call(input, 'buildId')) {
+        try {
+            const localInputPath = path.join(process.cwd(), 'INPUT.json');
+            const localInputRaw = await readFile(localInputPath, 'utf8');
+            const localInput = JSON.parse(localInputRaw);
+            if (typeof localInput === 'object' && localInput !== null && !Array.isArray(localInput)) {
+                input = localInput;
+                log.info('Using workspace INPUT.json for local run (ignoring stale storage INPUT).');
+            }
+        } catch {
+            // Keep Actor.getInput() if local INPUT.json is not available/valid
+        }
+    }
+
     let {
-        keyword = 'software engineer',
-        location = 'Toronto',
-        posted_date = 'anytime',
-        results_wanted: RESULTS_WANTED_RAW = 20,
+        keyword: keywordRaw,
+        location: locationRaw,
+        posted_date: postedDateRaw = 'anytime',
+        results_wanted: resultsWantedRaw,
         max_pages: MAX_PAGES_RAW = 10,
         detailConcurrency: DETAIL_CONCURRENCY_RAW = DETAIL_MAX_CONCURRENCY,
         collectDetails = true,
@@ -48,7 +65,12 @@ Actor.main(async () => {
         proxyConfiguration,
     } = input;
 
-    const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 20;
+    const requestedJobsRaw = resultsWantedRaw ?? 20;
+    const keyword = typeof keywordRaw === 'string' ? keywordRaw.trim() : '';
+    const location = typeof locationRaw === 'string' ? locationRaw.trim() : '';
+    let posted_date = typeof postedDateRaw === 'string' ? postedDateRaw : 'anytime';
+
+    const RESULTS_WANTED = Number.isFinite(+requestedJobsRaw) ? Math.max(1, +requestedJobsRaw) : 20;
     const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
     const DETAIL_CONCURRENCY = Number.isFinite(+DETAIL_CONCURRENCY_RAW)
         ? Math.max(1, Math.min(50, +DETAIL_CONCURRENCY_RAW))
@@ -61,7 +83,12 @@ Actor.main(async () => {
         posted_date = 'anytime';
     }
 
-    log.info('Starting Workopolis scraper', { keyword, location, results_wanted: RESULTS_WANTED, collectDetails });
+    log.info('Starting Workopolis scraper', {
+        keyword: keyword || null,
+        location: location || null,
+        results_wanted: RESULTS_WANTED,
+        collectDetails,
+    });
 
     // ======================== PROXY SETUP ========================
     let proxyUrl = null;
