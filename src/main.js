@@ -1,12 +1,11 @@
 // Workopolis.com Jobs Scraper - Production-Ready, Fast & Stealthy
 // Runtime: Node 22, ESM ("type": "module")
 // Uses apify@^3 and got-scraping for HTTP requests
-// Priority: 1) Next.js Internal API  2) __NEXT_DATA__ parsing  3) HTML fallback
+// Pure API mode: 1) Next.js internal JSON API for search 2) /api/next/job JSON API for details
 
 import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
-import * as cheerio from 'cheerio';
 
 // Constants for stealth and performance
 const USER_AGENTS = [
@@ -19,6 +18,7 @@ const USER_AGENTS = [
 const MIN_DELAY_MS = 500;
 const MAX_DELAY_MS = 1000;
 const MAX_RETRIES = 2;
+const STATE_KEY = 'STATE';
 
 Actor.main(async () => {
     const startTime = Date.now();
@@ -45,8 +45,8 @@ Actor.main(async () => {
         proxyConfiguration,
     } = input;
 
-    const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 100;
-    const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 999;
+    const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 20;
+    const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
 
     // Validate posted_date
     const validPostedDates = ['anytime', '24h', '7d', '30d'];
@@ -104,24 +104,6 @@ Actor.main(async () => {
     });
 
     /**
-     * Fast HTTP request without delay (for detail pages)
-     */
-    const fastFetch = async (url, referer = null) => {
-        try {
-            const response = await gotScraping({
-                url,
-                headers: buildHeaders(referer),
-                proxyUrl,
-                timeout: { request: 15000 },
-                retry: { limit: 1 },
-            });
-            return response;
-        } catch (error) {
-            return null; // Silent fail for speed
-        }
-    };
-
-    /**
      * Make HTTP request with delay and retries (for listing pages)
      */
     const fetchWithRetry = async (url, options = {}, retries = MAX_RETRIES) => {
@@ -162,20 +144,6 @@ Actor.main(async () => {
     };
 
     /**
-     * Extract __NEXT_DATA__ from HTML
-     */
-    const extractNextData = (html) => {
-        const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/s);
-        if (!match) return null;
-        try {
-            return JSON.parse(match[1]);
-        } catch (e) {
-            log.debug('Failed to parse __NEXT_DATA__');
-            return null;
-        }
-    };
-
-    /**
      * Build search URL
      */
     const buildSearchUrl = (kw, loc, date, cursor = null) => {
@@ -188,13 +156,124 @@ Actor.main(async () => {
     };
 
     /**
-     * Build Next.js API URL for faster subsequent pages
+     * Build Next.js search API URL
      */
     const buildApiUrl = (buildId, query, location, cursor = null) => {
         let path = `/search.json?q=${encodeURIComponent(query || 'jobs')}`;
         if (location) path += `&l=${encodeURIComponent(location)}`;
         if (cursor) path += `&cursor=${encodeURIComponent(cursor)}`;
         return `https://www.workopolis.com/_next/data/${buildId}${path}`;
+    };
+
+    /**
+     * Fetch pageProps from Next.js search API
+     */
+    const fetchSearchPageProps = async (activeBuildId, query, activeLocation, cursor = null) => {
+        const apiUrl = buildApiUrl(activeBuildId, query || 'jobs', activeLocation, cursor);
+        const response = await fetchWithRetry(apiUrl, {
+            referer: 'https://www.workopolis.com/search',
+            responseType: 'json',
+        });
+
+        const data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+        return data?.pageProps || null;
+    };
+
+    const fetchJobsPageData = async (query, activeLocation, locale, postedDate, cursor = null) => {
+        const url = new URL('https://www.workopolis.com/api/next/jobs');
+        url.searchParams.set('q', query || 'jobs');
+        if (activeLocation) url.searchParams.set('l', activeLocation);
+        if (locale) url.searchParams.set('locale', locale);
+        if (cursor) url.searchParams.set('cursor', cursor);
+
+        const postedDateToT = {
+            anytime: '',
+            '24h': '1',
+            '7d': '7',
+            '30d': '30',
+        };
+        const tValue = postedDateToT[postedDate] ?? '';
+        if (tValue) url.searchParams.set('t', tValue);
+
+        const response = await fetchWithRetry(url.href, {
+            referer: 'https://www.workopolis.com/search',
+            responseType: 'json',
+        });
+
+        return typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+    };
+
+    const parseCursorFromUrl = (url) => {
+        if (!url || typeof url !== 'string') return null;
+        try {
+            const parsed = new URL(url, 'https://www.workopolis.com');
+            return parsed.searchParams.get('cursor');
+        } catch {
+            return null;
+        }
+    };
+
+    const normalizeJobsPayload = (payload) => {
+        const pageProps = payload?.pageProps || payload?.data || payload || {};
+        const pageCursors = pageProps.pageCursors || payload?.pageCursors || {};
+        const currentPageNumber = pageProps.currentPageNumber || payload?.currentPageNumber || 1;
+        const nextCursor =
+            pageProps.nextCursor
+            || payload?.nextCursor
+            || pageCursors[String(Number(currentPageNumber) + 1)]
+            || parseCursorFromUrl(pageProps.nextPageUrl || payload?.nextPageUrl)
+            || null;
+
+        return {
+            jobs: Array.isArray(pageProps.jobs) ? pageProps.jobs : [],
+            viewJobData: pageProps.viewJobData || null,
+            pageCursors,
+            currentPageNumber,
+            nextCursor,
+        };
+    };
+
+    const discoverBuildId = async (searchUrl) => {
+        const response = await fetchWithRetry(searchUrl, {
+            referer: 'https://www.workopolis.com/',
+            responseType: 'text',
+        });
+
+        const html = typeof response.body === 'string' ? response.body : String(response.body || '');
+        if (!html) return null;
+
+        const direct = html.match(/"buildId"\s*:\s*"([^"]+)"/i)?.[1];
+        if (direct) return direct;
+
+        const manifest = html.match(/_next\/static\/([^/]+)\/_buildManifest\.js/i)?.[1];
+        if (manifest) return manifest;
+
+        return null;
+    };
+
+    /**
+     * Fast API-only detail fetch (no HTML parsing)
+     */
+    const fetchJobDetailFromApi = async (jobKey, locale, continueUrl, jobCardTrackingKey = null) => {
+        if (!jobKey || !locale || !continueUrl) return null;
+        try {
+            const url = new URL('https://www.workopolis.com/api/next/job');
+            url.searchParams.set('key', jobKey);
+            url.searchParams.set('locale', locale);
+            url.searchParams.set('indeedApplyContinueUrl', continueUrl);
+            if (jobCardTrackingKey) url.searchParams.set('jobCardTrackingKey', jobCardTrackingKey);
+
+            const response = await fetchWithRetry(url.href, {
+                referer: continueUrl,
+                responseType: 'json',
+            }, 3);
+
+            const data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+            if (data?.jobKey === jobKey) return data;
+            return null;
+        } catch (error) {
+            return null;
+        }
     };
 
     /**
@@ -398,54 +477,17 @@ Actor.main(async () => {
         };
     };
 
-    /**
-     * Fetch job details via HTML page (fastest working method)
-     */
-    const fetchJobDetail = async (jobKey) => {
-        try {
-            const htmlUrl = `https://www.workopolis.com/jobsearch/viewjob/${jobKey}`;
-            const response = await fastFetch(htmlUrl, 'https://www.workopolis.com/search');
-            if (!response) return null;
-
-            const $ = cheerio.load(response.body);
-
-            // Extract from __NEXT_DATA__ in HTML
-            const nextDataScript = $('#__NEXT_DATA__').html();
-            if (nextDataScript) {
-                const nextData = JSON.parse(nextDataScript);
-                const viewJobData = nextData.props?.pageProps?.viewJobData;
-                if (viewJobData && viewJobData.jobDescriptionHtml) {
-                    return viewJobData;
-                }
-            }
-
-            // Fallback: direct HTML parsing
-            const descriptionHtml = $('[data-testid="viewJobBodyJobFullDescriptionContent"]').html() ||
-                $('.job-description').html();
-
-            if (descriptionHtml) {
-                return {
-                    jobKey,
-                    jobDescriptionHtml: descriptionHtml,
-                    employerName: $('[data-testid="employer-name"]').text().trim() || null,
-                    formattedLocation: $('[data-testid="location"]').text().trim() || null,
-                };
-            }
-        } catch (error) {
-            // Silent fail for speed
-        }
-        return null;
-    };
-
     // ======================== MAIN SCRAPING LOGIC ========================
 
     const jobs = [];
     const seenJobKeys = new Set();
+    const jobMetaByKey = new Map();
     let buildId = null;
+    let listingMode = 'nextData';
     let currentCursor = null;
     let pageNum = 0;
 
-    // Determine start URL
+    // Determine start URL and API query params
     let startSearchUrl;
     if (Array.isArray(startUrls) && startUrls.length > 0) {
         const firstUrl = typeof startUrls[0] === 'string' ? startUrls[0] : startUrls[0]?.url;
@@ -454,70 +496,108 @@ Actor.main(async () => {
         startSearchUrl = buildSearchUrl(keyword, location, posted_date);
     }
 
+    let apiKeyword = keyword || 'jobs';
+    let apiLocation = location;
+    let apiLocale = 'en-CA';
+    try {
+        const startUrlObj = new URL(startSearchUrl);
+        apiKeyword = startUrlObj.searchParams.get('q') || apiKeyword;
+        apiLocation = startUrlObj.searchParams.get('l') || apiLocation;
+        const localeMatch = startUrlObj.pathname.match(/^\/(en-CA|fr-CA)(\/|$)/i);
+        if (localeMatch?.[1]) apiLocale = localeMatch[1];
+    } catch {
+        // Keep default keyword/location
+    }
+
     log.info(`Starting with URL: ${startSearchUrl}`);
 
-    // ======================== PHASE 1: Initial Page ========================
-    try {
-        log.info('Fetching initial page...');
-        const response = await fetchWithRetry(startSearchUrl);
-
-        // Log response diagnostics
-        log.info(`Response received: ${response.statusCode} | Body length: ${response.body?.length || 0} chars`);
-
-        // Check for blocking
-        if (response.body?.includes('blocked') || response.body?.includes('captcha') || response.body?.includes('Access Denied')) {
-            log.error('Request appears to be blocked. Try using RESIDENTIAL proxies.');
-            // Save HTML for debugging
-            await Actor.setValue('BLOCKED_PAGE', response.body, { contentType: 'text/html' });
-            return;
-        }
-
-        const nextData = extractNextData(response.body);
-
-        if (!nextData) {
-            log.error('Could not extract __NEXT_DATA__. Site may have changed or be blocking.');
-            return;
-        }
-
-        buildId = nextData.buildId;
-        const pageProps = nextData.props?.pageProps;
-
-        if (!pageProps) {
-            log.error('No pageProps found - unexpected page structure');
-            return;
-        }
-
-        log.info(`BuildId: ${buildId}`);
-
-        // Extract jobs from first page
+    const processPageData = (pageProps, activePageNum) => {
         const pageJobs = pageProps.jobs || [];
         const viewJobData = pageProps.viewJobData || null;
         const cursors = pageProps.pageCursors || {};
 
-        log.info(`Page 1: Found ${pageJobs.length} jobs`);
-
-        if (pageJobs.length === 0) {
-            log.warning('No jobs found on first page');
-        }
+        log.info(`Page ${activePageNum}: Found ${pageJobs.length} jobs`);
 
         for (const job of pageJobs) {
             if (seenJobKeys.has(job.jobKey)) continue;
             if (jobs.length >= RESULTS_WANTED) break;
 
             seenJobKeys.add(job.jobKey);
+            jobMetaByKey.set(job.jobKey, {
+                jobCardTrackingKey: job.jobCardTrackingKey || null,
+            });
             const parsedJob = parseJob(job, viewJobData);
             jobs.push(parsedJob);
         }
 
-        // Get cursor for next page
-        currentCursor = cursors['2'] || null;
-        pageNum = 1;
+        return cursors;
+    };
 
-        log.info(`Collected ${jobs.length} jobs, ${currentCursor ? 'more pages available' : 'no more pages'}`);
+    // ======================== PHASE 1: Initial Data (API-only) ========================
+    const state = await Actor.getValue(STATE_KEY) || {};
+    const buildIdCandidates = [
+        typeof state?.lastBuildId === 'string' ? state.lastBuildId.trim() : null,
+        ...(Array.isArray(state?.buildIdHistory) ? state.buildIdHistory : []),
+    ].filter(Boolean).filter((value, index, array) => array.indexOf(value) === index);
 
+    try {
+        const discoveredBuildId = await discoverBuildId(startSearchUrl);
+        if (discoveredBuildId && !buildIdCandidates.includes(discoveredBuildId)) {
+            buildIdCandidates.unshift(discoveredBuildId);
+            log.info(`Discovered internal buildId from page source: ${discoveredBuildId}`);
+        }
     } catch (error) {
-        log.error(`Failed to fetch initial page: ${error.message}`);
-        return;
+        log.warning(`Could not discover buildId from page source: ${error.message}`);
+    }
+
+    for (const candidateBuildId of buildIdCandidates) {
+        try {
+            log.info(`Trying API with internal buildId candidate: ${candidateBuildId}`);
+            const pageProps = await fetchSearchPageProps(candidateBuildId, apiKeyword, apiLocation, null);
+            if (!pageProps || !Array.isArray(pageProps.jobs)) continue;
+
+            buildId = candidateBuildId;
+            const cursors = processPageData(pageProps, 1);
+            currentCursor = cursors['2'] || null;
+            pageNum = 1;
+            log.info(`API bootstrap succeeded with internal buildId ${candidateBuildId}`);
+            break;
+        } catch (error) {
+            log.warning(`Internal buildId failed: ${candidateBuildId}`);
+        }
+    }
+
+    if (!buildId) {
+        try {
+            const firstPageRaw = await fetchJobsPageData(apiKeyword, apiLocation, apiLocale, posted_date, null);
+            const firstPage = normalizeJobsPayload(firstPageRaw);
+            if (firstPage.jobs.length > 0) {
+                listingMode = 'jobsApi';
+                processPageData(firstPage, 1);
+                pageNum = Number(firstPage.currentPageNumber) || 1;
+                currentCursor = firstPage.nextCursor;
+                log.info('Bootstrapped via /api/next/jobs (buildId-free mode)');
+            } else {
+                log.error('API-only mode could not bootstrap: no jobs from internal buildId or /api/next/jobs');
+                return;
+            }
+        } catch (error) {
+            log.error(`API-only mode could not bootstrap: ${error.message}`);
+            return;
+        }
+    } else {
+        listingMode = 'nextData';
+    }
+
+    if (buildId) {
+        const history = Array.isArray(state?.buildIdHistory) ? state.buildIdHistory : [];
+        const nextHistory = [buildId, ...history.filter((item) => item !== buildId)].slice(0, 5);
+        await Actor.setValue(STATE_KEY, {
+            ...state,
+            lastBuildId: buildId,
+            buildIdHistory: nextHistory,
+            updatedAt: new Date().toISOString(),
+        });
     }
 
     // ======================== PHASE 2: Pagination via API ========================
@@ -525,32 +605,29 @@ Actor.main(async () => {
         pageNum++;
 
         try {
-            // Use Next.js API for faster pagination (JSON only, no HTML parsing)
-            const apiUrl = buildApiUrl(buildId, keyword || 'jobs', location, currentCursor);
-            log.debug(`Fetching page ${pageNum} via API`);
+            log.debug(`Fetching page ${pageNum} via API (${listingMode})`);
 
-            const response = await fetchWithRetry(apiUrl, {
-                referer: 'https://www.workopolis.com/search',
-                responseType: 'json'
-            });
-
-            let data;
-            try {
-                data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-            } catch (e) {
-                log.warning(`Failed to parse API response on page ${pageNum}`);
-                break;
+            let pagePayload = null;
+            if (listingMode === 'nextData') {
+                const pageProps = await fetchSearchPageProps(buildId, apiKeyword, apiLocation, currentCursor);
+                if (!pageProps) {
+                    log.warning(`No pageProps in API response on page ${pageNum}`);
+                    break;
+                }
+                pagePayload = {
+                    jobs: pageProps.jobs || [],
+                    viewJobData: pageProps.viewJobData || null,
+                    pageCursors: pageProps.pageCursors || {},
+                    currentPageNumber: pageNum,
+                    nextCursor: (pageProps.pageCursors || {})[String(pageNum + 1)] || null,
+                };
+            } else {
+                const pageRaw = await fetchJobsPageData(apiKeyword, apiLocation, apiLocale, posted_date, currentCursor);
+                pagePayload = normalizeJobsPayload(pageRaw);
             }
 
-            const pageProps = data.pageProps;
-            if (!pageProps) {
-                log.warning(`No pageProps in API response on page ${pageNum}`);
-                break;
-            }
-
-            const pageJobs = pageProps.jobs || [];
-            const viewJobData = pageProps.viewJobData || null;
-            const cursors = pageProps.pageCursors || {};
+            const pageJobs = pagePayload.jobs || [];
+            const cursors = pagePayload.pageCursors || {};
 
             if (pageJobs.length === 0) {
                 log.info(`No more jobs found on page ${pageNum}. End of results.`);
@@ -562,18 +639,11 @@ Actor.main(async () => {
                 log.info(`Page ${pageNum}: Found ${pageJobs.length} jobs | Total: ${jobs.length}/${RESULTS_WANTED}`);
             }
 
-            for (const job of pageJobs) {
-                if (seenJobKeys.has(job.jobKey)) continue;
-                if (jobs.length >= RESULTS_WANTED) break;
-
-                seenJobKeys.add(job.jobKey);
-                const parsedJob = parseJob(job, viewJobData);
-                jobs.push(parsedJob);
-            }
+            processPageData(pagePayload, pageNum);
 
             // Get next cursor
             const nextPageNum = pageNum + 1;
-            currentCursor = cursors[String(nextPageNum)] || null;
+            currentCursor = cursors[String(nextPageNum)] || pagePayload.nextCursor || null;
 
             if (!currentCursor) {
                 // Try to find any remaining cursor
@@ -583,29 +653,13 @@ Actor.main(async () => {
             }
 
         } catch (error) {
-            if (error.response?.statusCode === 404) {
-                log.warning('BuildId may have changed. Attempting refresh...');
-                // Refresh buildId by fetching HTML page
-                try {
-                    const refreshUrl = buildSearchUrl(keyword, location, posted_date, currentCursor);
-                    const response = await fetchWithRetry(refreshUrl);
-                    const nextData = extractNextData(response.body);
-                    if (nextData?.buildId) {
-                        buildId = nextData.buildId;
-                        log.info(`Refreshed buildId: ${buildId}`);
-                        continue; // Retry with new buildId
-                    }
-                } catch (e) {
-                    log.error('Failed to refresh buildId');
-                }
-            }
             log.error(`Failed on page ${pageNum}: ${error.message}`);
             break;
         }
     }
 
     // ======================== PHASE 3: Fetch Job Details (if needed) ========================
-    // Count how many jobs already have descriptions from __NEXT_DATA__ viewJobData
+    // Count how many jobs already include descriptions from listing API data
     const jobsWithDescription = jobs.filter(j => j.description_html).length;
     const jobsNeedingDetails = jobs.length - jobsWithDescription;
 
@@ -637,7 +691,13 @@ Actor.main(async () => {
             await Promise.all(batch.map(async (job) => {
                 if (job.description_html) return; // Already has description
 
-                const detail = await fetchJobDetail(job.jobKey);
+                const jobMeta = jobMetaByKey.get(job.jobKey) || {};
+                const detail = await fetchJobDetailFromApi(
+                    job.jobKey,
+                    apiLocale,
+                    startSearchUrl,
+                    jobMeta.jobCardTrackingKey,
+                );
                 if (detail) {
                     const rawHtml = detail.jobDescriptionHtml || detail.description || null;
                     if (rawHtml) {
@@ -659,7 +719,39 @@ Actor.main(async () => {
             }
         }
 
+        // Second pass for reliability: retry any missing descriptions sequentially
+        const missingAfterFirstPass = jobs.filter((job) => !job.description_html || !job.description_text);
+        if (missingAfterFirstPass.length > 0) {
+            log.info(`Retrying API details for ${missingAfterFirstPass.length} jobs still missing descriptions...`);
+            for (const job of missingAfterFirstPass) {
+                const jobMeta = jobMetaByKey.get(job.jobKey) || {};
+                const detail = await fetchJobDetailFromApi(
+                    job.jobKey,
+                    apiLocale,
+                    startSearchUrl,
+                    jobMeta.jobCardTrackingKey,
+                );
+                if (!detail) continue;
+
+                const rawHtml = detail.jobDescriptionHtml || detail.description || null;
+                if (rawHtml) {
+                    job.description_html = sanitizeHtml(rawHtml);
+                    job.description_text = htmlToCleanText(rawHtml);
+                }
+                if (!job.company && detail.employerName) job.company = detail.employerName;
+                if (!job.datePosted) job.datePosted = detail.datePublished || detail.dateOnIndeed;
+                if (!job.location && detail.formattedLocation) job.location = detail.formattedLocation;
+            }
+        }
+
         log.info(`Enriched ${enriched}/${jobsNeedingDetails} jobs with descriptions`);
+
+        const missingAfterEnrichment = jobs.filter((job) => !job.description_html || !job.description_text).length;
+        if (missingAfterEnrichment > 0) {
+            log.warning(`Descriptions missing after API enrichment: ${missingAfterEnrichment}/${jobs.length}`);
+        } else {
+            log.info(`All ${jobs.length} jobs have description_html and description_text`);
+        }
     } else if (!collectDetails) {
         log.info('Skipping detail page fetches (collectDetails=false) for faster execution');
     } else if (jobsNeedingDetails === 0) {

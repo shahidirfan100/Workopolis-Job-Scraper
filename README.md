@@ -1,205 +1,210 @@
 # Workopolis Jobs Scraper
 
-Scrape job listings from Workopolis.com - Canada's leading job board. Extract thousands of job postings with complete details including job title, company name, location, salary, employment type, and full job descriptions.
+Extract Workopolis job listings at scale with rich, structured output for analytics, lead generation, and recruitment intelligence. Collect job titles, companies, locations, compensation details, and full descriptions in a dataset-ready format. Built for fast, reliable collection and consistent downstream use.
 
-## What is Workopolis?
+## Features
 
-Workopolis is one of Canada's largest and most trusted job search platforms, connecting millions of job seekers with employers across all industries. This scraper allows you to automatically collect job postings from Workopolis for market research, recruitment analytics, salary benchmarking, and job market analysis.
+- **High-volume job collection** — Gather large job datasets across keywords and locations.
+- **Full job content capture** — Collect both `description_html` and `description_text` for each job.
+- **Detailed field coverage** — Get company, salary, job type, benefits, date posted, and requirements.
+- **Automatic pagination** — Continue through result pages until your target count is reached.
+- **Flexible search input** — Use either `keyword` + `location` or direct `startUrls`.
+- **Production-friendly output** — Export clean data for BI tools, sheets, and pipelines.
 
-## What data can you extract from Workopolis?
+## Use Cases
 
-This scraper extracts comprehensive job listing data:
+### Talent Market Research
+Track hiring volume and role trends by city, title, and recency. Build recurring reports for workforce and labor-market insights.
 
-- **Job Title** - Full position title as listed
-- **Company Name** - Hiring organization
-- **Location** - City, province, or remote status
-- **Salary Information** - Pay range when available
-- **Employment Type** - Full-time, part-time, contract, etc.
-- **Date Posted** - When the job was published
-- **Job Description** - Complete job details and requirements
-- **Direct URL** - Link to the original job posting
+### Recruitment Intelligence
+Monitor who is hiring, where demand is increasing, and which roles are growing fastest. Compare companies and locations over time.
 
-## Why scrape Workopolis jobs?
+### Compensation Benchmarking
+Capture available salary data to benchmark compensation by role and region. Support planning with real listing-level evidence.
 
-### Market Research
-Analyze hiring trends across Canadian industries. Understand which skills are in demand and how job markets evolve over time.
+### Job Board Aggregation
+Feed structured Workopolis data into internal dashboards or multi-source job platforms. Maintain consistent schemas across sources.
 
-### Salary Benchmarking
-Collect salary data to benchmark compensation packages. Compare pay rates across different roles, locations, and experience levels.
+### Academic and Economic Analysis
+Use historical and recurring job listing data for research projects in labor economics, education, and regional development.
 
-### Recruitment Analytics
-Monitor competitor hiring activity. Track which companies are expanding and what roles they're filling.
+---
 
-### Job Aggregation
-Build comprehensive job boards by combining listings from multiple sources including Workopolis.
+## Input Parameters
 
-### Academic Research
-Study employment patterns, labor market dynamics, and workforce trends in Canada.
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `startUrls` | Array | No | — | Optional list of Workopolis search URLs to use directly. |
+| `keyword` | String | No | `software engineer` | Search keyword, title, or skill phrase. |
+| `location` | String | No | `Toronto` | Search location (city, region, or province). |
+| `posted_date` | String | No | `anytime` | Recency filter: `anytime`, `24h`, `7d`, `30d`. |
+| `collectDetails` | Boolean | No | `true` | When enabled, enriches jobs with full descriptions and additional details. |
+| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect. |
+| `max_pages` | Integer | No | `10` | Safety limit for result pages. |
+| `proxyConfiguration` | Object | No | Apify Proxy Residential | Proxy setup for stability and reliability. |
 
-## How to use Workopolis Jobs Scraper
+---
 
-### Input Configuration
+## Output Data
 
-The scraper offers flexible search options:
+Each dataset item includes:
 
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| Keyword | Job title or skills to search | `software engineer`, `data analyst`, `nurse` |
-| Location | City or province | `Toronto`, `Vancouver`, `Alberta` |
-| Posted Date | Filter by recency | `anytime`, `24h`, `7d`, `30d` |
-| Maximum Jobs | Number of jobs to collect | `50`, `100`, `500` |
-| Collect Details | Fetch full job descriptions | `true` or `false` |
+| Field | Type | Description |
+|-------|------|-------------|
+| `url` | String | Direct Workopolis view-job URL. |
+| `jobKey` | String | Unique job identifier. |
+| `title` | String | Job title. |
+| `company` | String | Employer name. |
+| `location` | String | Job location. |
+| `salary` | String \| Null | Salary or compensation text when available. |
+| `employmentType` | String \| Null | Employment type (full-time, contract, etc.). |
+| `workSettings` | String \| Null | Work arrangement details (for example, remote/hybrid). |
+| `datePosted` | String \| Number \| Null | Posted/published date data from source. |
+| `benefits` | String \| Null | Benefits summary when available. |
+| `snippet` | String \| Null | Listing preview text. |
+| `requirements` | String \| Null | Requirement highlights from listing data. |
+| `description_html` | String \| Null | Full job description in sanitized HTML format. |
+| `description_text` | String \| Null | Plain text description for analysis/search. |
+| `_source` | String | Source hostname. |
+| `_fetchedAt` | String | ISO timestamp of extraction. |
 
-### Example: Search for Software Jobs in Toronto
+---
+
+## Usage Examples
+
+### Basic Run
 
 ```json
 {
-  "keyword": "software developer",
+  "keyword": "software engineer",
   "location": "Toronto",
+  "results_wanted": 20,
+  "collectDetails": true
+}
+```
+
+### Recent Jobs Only
+
+```json
+{
+  "keyword": "data analyst",
+  "location": "Vancouver",
   "posted_date": "7d",
   "results_wanted": 100,
   "collectDetails": true
 }
 ```
 
-### Example: Quick Search Without Descriptions
-
-```json
-{
-  "keyword": "marketing manager",
-  "location": "Vancouver",
-  "results_wanted": 200,
-  "collectDetails": false
-}
-```
-
-### Example: Using a Direct URL
+### URL-Driven Search
 
 ```json
 {
   "startUrls": [
-    { "url": "https://www.workopolis.com/search?q=accountant&l=Calgary" }
+    { "url": "https://www.workopolis.com/search?q=full+stack+developer&l=Calgary" }
   ],
-  "results_wanted": 50
+  "results_wanted": 50,
+  "collectDetails": true
 }
 ```
 
-## Output Format
+---
 
-Each job listing is returned as a structured JSON object:
+## Sample Output
 
 ```json
 {
   "url": "https://www.workopolis.com/jobsearch/viewjob/abc123",
-  "title": "Senior Software Engineer",
-  "company": "Tech Solutions Inc.",
+  "jobKey": "abc123",
+  "title": "Software Engineer",
+  "company": "Example Corp",
   "location": "Toronto, ON",
-  "salary": "$90,000 - $120,000/year",
+  "salary": "$95,000 - $120,000/year",
   "employmentType": "Full-time",
-  "datePosted": "2025-01-02",
-  "description_text": "We are looking for an experienced software engineer...",
-  "description_html": "<div>We are looking for an experienced software engineer...</div>"
+  "workSettings": "Hybrid",
+  "datePosted": 1770755092538,
+  "benefits": "Health insurance, Paid time off",
+  "snippet": "Build and maintain scalable backend services...",
+  "requirements": "Node.js, TypeScript, APIs",
+  "description_html": "<p>Full role description...</p>",
+  "description_text": "Full role description...",
+  "_source": "workopolis.com",
+  "_fetchedAt": "2026-02-13T12:00:00.000Z"
 }
 ```
 
-### Output Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| url | String | Direct link to the job posting |
-| title | String | Job position title |
-| company | String | Name of the hiring company |
-| location | String | Job location (city, province) |
-| salary | String | Salary range if available |
-| employmentType | String | Type of employment |
-| datePosted | String | Publication date |
-| description_text | String | Plain text job description |
-| description_html | String | HTML formatted description |
-
-## How many jobs can you scrape?
-
-The scraper can collect thousands of job listings per run. Adjust the `results_wanted` parameter based on your needs:
-
-- **Quick sample**: 25-50 jobs
-- **Standard analysis**: 100-500 jobs
-- **Comprehensive research**: 1000+ jobs
-
-## Integrations and Data Export
-
-Export your scraped data in multiple formats:
-
-- **JSON** - Structured data for applications
-- **CSV** - Spreadsheet compatible
-- **Excel** - Direct Excel file export
-- **API** - Access via Apify API
-
-Integrate with your workflow using:
-- Webhooks for automated notifications
-- Apify integrations with Zapier, Make, and Google Sheets
-- Direct API access for custom applications
+---
 
 ## Tips for Best Results
 
-1. **Be Specific** - Use precise keywords for more relevant results
-2. **Filter by Date** - Use `posted_date` to focus on recent listings
-3. **Adjust Limits** - Set appropriate `results_wanted` for your use case
-4. **Enable Proxies** - Use residential proxies for reliable scraping
-5. **Check Output** - Review initial results before large-scale runs
+### Start With Focused Queries
+- Use specific role names and locations for higher relevance.
+- Run broader queries only when you need larger discovery datasets.
+
+### Keep `collectDetails` Enabled
+- Leave `collectDetails` as `true` when you need full job descriptions.
+- Disable it only for very fast headline-level scans.
+
+### Use Practical Limits
+- Use `results_wanted: 20` for quick checks.
+- Increase to 100+ for reporting and trend analysis.
+
+### Use Reliable Proxy Settings
+- Keep Apify Proxy enabled for stable collection.
+- Residential proxy groups are recommended for consistency.
+
+---
+
+## Integrations
+
+- **Google Sheets** — Share job datasets with non-technical teams.
+- **Airtable** — Build searchable hiring intelligence bases.
+- **Make** — Automate recurring extraction and notifications.
+- **Zapier** — Trigger workflows from fresh job data.
+- **Webhooks** — Send output directly to your own endpoints.
+
+### Export Formats
+
+- **JSON** — Application and pipeline friendly.
+- **CSV** — Spreadsheet analysis and BI imports.
+- **Excel** — Business reporting workflows.
+- **XML** — Legacy system integrations.
+
+---
 
 ## Frequently Asked Questions
 
-### How often is Workopolis data updated?
-Workopolis updates job listings continuously. Run the scraper daily or weekly to capture new postings.
+### How many jobs can I collect?
+You can collect up to your configured limits. Set `results_wanted` and `max_pages` based on your target volume.
 
-### Can I scrape jobs from specific industries?
-Yes, use industry-specific keywords like "healthcare", "finance", or "technology" to filter results.
+### Can I search by city and keyword together?
+Yes. Use `keyword` and `location` together for focused results.
 
-### Is the salary information always available?
-Salary data is extracted when employers include it in their listings. Not all jobs display salary information.
+### Are full descriptions included?
+Yes. With `collectDetails: true`, the actor enriches jobs with both HTML and plain text descriptions.
 
-### How do I handle pagination?
-The scraper automatically handles pagination. Simply set your desired `results_wanted` count.
+### Can I run from a custom search URL?
+Yes. Provide one or more URLs in `startUrls`.
 
-### Can I use custom search URLs?
-Yes, use the `startUrls` parameter with any valid Workopolis search URL.
+### Why do some fields appear empty?
+Some job listings do not provide every field (for example salary or benefits). Missing source data is returned as `null`.
 
-## Pricing and Costs
+### Is pagination automatic?
+Yes. The actor handles pagination until limits are reached.
 
-This scraper is optimized for efficiency:
+---
 
-- **Low compute usage** - Minimal processing overhead
-- **Fast execution** - Collects jobs quickly
-- **Cost effective** - Designed to minimize platform costs
+## Support
 
-Estimated cost: Approximately $1-5 per 1000 jobs depending on settings.
+For issues or improvement requests, open a message through the Apify actor page.
 
-## Legal and Compliance
+### Resources
 
-This scraper is intended for legitimate business purposes including market research, analytics, and data aggregation. Users are responsible for ensuring their use complies with Workopolis terms of service and applicable laws.
+- [Apify Documentation](https://docs.apify.com/)
+- [Apify API Reference](https://docs.apify.com/api/v2)
+- [Schedules](https://docs.apify.com/platform/schedules)
 
-## Support and Feedback
+---
 
-If you encounter issues or have suggestions:
+## Legal Notice
 
-1. Check the run log for error messages
-2. Verify your input configuration
-3. Contact support through Apify platform
-
-We welcome feedback to improve this scraper.
-
-## Related Scrapers
-
-Looking for more job data? Check out scrapers for:
-- Indeed Jobs
-- LinkedIn Jobs
-- Glassdoor Jobs
-- Monster Jobs
-- ZipRecruiter Jobs
-
-## Changelog
-
-### Version 2.0.0
-- Improved reliability and speed
-- Enhanced data extraction
-- Better error handling
-- Optimized for cost efficiency
+Use this actor only for legitimate data collection and analysis. You are responsible for compliance with Workopolis terms and all applicable laws in your jurisdiction.
