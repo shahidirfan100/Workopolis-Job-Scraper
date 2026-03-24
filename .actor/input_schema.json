@@ -45,24 +45,6 @@
       "prefill": "anytime",
       "editor": "select"
     },
-    "collectDetails": {
-      "title": "Collect Full Descriptions",
-      "type": "boolean",
-      "description": "Fetch full job descriptions from detail pages. Disable for faster scraping.",
-      "default": true,
-      "prefill": true,
-      "editor": "checkbox"
-    },
-    "detailConcurrency": {
-      "title": "Detail Concurrency",
-      "type": "integer",
-      "description": "Parallel API requests for job details. Higher is faster, lower is more reliable.",
-      "minimum": 1,
-      "maximum": 50,
-      "default": 20,
-      "prefill": 20,
-      "editor": "number"
-    },
     "results_wanted": {
       "title": "Maximum Jobs",
       "type": "integer",
@@ -89,10 +71,7 @@
       "description": "Proxy settings. RESIDENTIAL proxies recommended.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
+        "useApifyProxy": false
       }
     }
   },

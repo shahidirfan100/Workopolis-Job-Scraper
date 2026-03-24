@@ -38,7 +38,6 @@ Use historical and recurring job listing data for research projects in labor eco
 | `keyword` | String | No | `software engineer` | Search keyword, title, or skill phrase. |
 | `location` | String | No | `Toronto` | Search location (city, region, or province). |
 | `posted_date` | String | No | `anytime` | Recency filter: `anytime`, `24h`, `7d`, `30d`. |
-| `collectDetails` | Boolean | No | `true` | When enabled, enriches jobs with full descriptions and additional details. |
 | `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect. |
 | `max_pages` | Integer | No | `10` | Safety limit for result pages. |
 | `proxyConfiguration` | Object | No | Apify Proxy Residential | Proxy setup for stability and reliability. |
@@ -78,8 +77,7 @@ Each dataset item includes:
 {
   "keyword": "software engineer",
   "location": "Toronto",
-  "results_wanted": 20,
-  "collectDetails": true
+  "results_wanted": 20
 }
 ```
 
@@ -90,8 +88,7 @@ Each dataset item includes:
   "keyword": "data analyst",
   "location": "Vancouver",
   "posted_date": "7d",
-  "results_wanted": 100,
-  "collectDetails": true
+  "results_wanted": 100
 }
 ```
 
@@ -102,8 +99,7 @@ Each dataset item includes:
   "startUrls": [
     { "url": "https://www.workopolis.com/search?q=full+stack+developer&l=Calgary" }
   ],
-  "results_wanted": 50,
-  "collectDetails": true
+  "results_wanted": 50
 }
 ```
 
@@ -140,9 +136,9 @@ Each dataset item includes:
 - Use specific role names and locations for higher relevance.
 - Run broader queries only when you need larger discovery datasets.
 
-### Keep `collectDetails` Enabled
-- Leave `collectDetails` as `true` when you need full job descriptions.
-- Disable it only for very fast headline-level scans.
+### Description Enrichment Is Automatic
+- Full descriptions are fetched automatically when listing payloads do not include them.
+- No extra input parameter is required for detail enrichment.
 
 ### Use Practical Limits
 - Use `results_wanted: 20` for quick checks.
@@ -180,7 +176,7 @@ You can collect up to your configured limits. Set `results_wanted` and `max_page
 Yes. Use `keyword` and `location` together for focused results.
 
 ### Are full descriptions included?
-Yes. With `collectDetails: true`, the actor enriches jobs with both HTML and plain text descriptions.
+Yes. The actor automatically enriches jobs with both HTML and plain text descriptions when needed.
 
 ### Can I run from a custom search URL?
 Yes. Provide one or more URLs in `startUrls`.

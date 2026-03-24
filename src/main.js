@@ -20,7 +20,7 @@ const USER_AGENTS = [
 const MIN_DELAY_MS = 500;
 const MAX_DELAY_MS = 1000;
 const MAX_RETRIES = 2;
-const DETAIL_MAX_CONCURRENCY = 20;
+const DETAIL_CONCURRENCY = 20;
 const DETAIL_MAX_RETRIES = 2;
 const STATE_KEY = 'STATE';
 
@@ -59,8 +59,6 @@ Actor.main(async () => {
         posted_date: postedDateRaw = 'anytime',
         results_wanted: resultsWantedRaw,
         max_pages: MAX_PAGES_RAW = 10,
-        detailConcurrency: DETAIL_CONCURRENCY_RAW = DETAIL_MAX_CONCURRENCY,
-        collectDetails = true,
         startUrls,
         proxyConfiguration,
     } = input;
@@ -72,9 +70,6 @@ Actor.main(async () => {
 
     const RESULTS_WANTED = Number.isFinite(+requestedJobsRaw) ? Math.max(1, +requestedJobsRaw) : 20;
     const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
-    const DETAIL_CONCURRENCY = Number.isFinite(+DETAIL_CONCURRENCY_RAW)
-        ? Math.max(1, Math.min(50, +DETAIL_CONCURRENCY_RAW))
-        : DETAIL_MAX_CONCURRENCY;
 
     // Validate posted_date
     const validPostedDates = ['anytime', '24h', '7d', '30d'];
@@ -87,7 +82,7 @@ Actor.main(async () => {
         keyword: keyword || null,
         location: location || null,
         results_wanted: RESULTS_WANTED,
-        collectDetails,
+        detailConcurrency: DETAIL_CONCURRENCY,
     });
 
     // ======================== PROXY SETUP ========================
@@ -585,6 +580,25 @@ Actor.main(async () => {
         };
     };
 
+    const cleanOutputRecord = (record) => {
+        const cleaned = {};
+        for (const [key, value] of Object.entries(record)) {
+            if (value === null || value === undefined || value === '') continue;
+            cleaned[key] = value;
+        }
+        return cleaned;
+    };
+
+    const dedupeAndCleanJobs = (records) => {
+        const unique = new Map();
+        for (const record of records) {
+            const dedupeKey = record.jobKey || record.url;
+            if (!dedupeKey || unique.has(dedupeKey)) continue;
+            unique.set(dedupeKey, cleanOutputRecord(record));
+        }
+        return Array.from(unique.values());
+    };
+
     // ======================== MAIN SCRAPING LOGIC ========================
 
     const jobs = [];
@@ -766,7 +780,7 @@ Actor.main(async () => {
         }
     }
 
-    // ======================== PHASE 3: Fetch Job Details (if needed) ========================
+    // ======================== PHASE 3: Fetch Job Details ========================
     // Count how many jobs already include descriptions from listing API data
     const jobsWithDescription = jobs.filter(j => j.description_html).length;
     const jobsNeedingDetails = jobs.length - jobsWithDescription;
@@ -775,19 +789,8 @@ Actor.main(async () => {
 
     // Track which jobs have been saved
     let savedCount = 0;
-    const SAVE_BATCH_SIZE = 10;
 
-    // Helper to save a batch of jobs
-    const saveJobsBatch = async (startIdx, endIdx) => {
-        const batch = jobs.slice(startIdx, endIdx);
-        if (batch.length > 0) {
-            await Dataset.pushData(batch);
-            savedCount = endIdx;
-            log.info(`✓ Saved jobs ${startIdx + 1}-${endIdx} to dataset (${savedCount}/${jobs.length})`);
-        }
-    };
-
-    if (collectDetails && jobsNeedingDetails > 0) {
+    if (jobsNeedingDetails > 0) {
         log.info(`Fetching descriptions for ${jobsNeedingDetails} jobs with concurrency ${DETAIL_CONCURRENCY}...`);
 
         let enriched = 0;
@@ -848,30 +851,38 @@ Actor.main(async () => {
         } else {
             log.info(`All ${jobs.length} jobs have description_html and description_text`);
         }
-    } else if (!collectDetails) {
-        log.info('Skipping detail page fetches (collectDetails=false) for faster execution');
     } else if (jobsNeedingDetails === 0) {
         log.info('All jobs already have descriptions from listing data - no detail fetches needed!');
     }
 
-    // ======================== PHASE 4: Save Remaining Results ========================
-    if (savedCount < jobs.length) {
-        await saveJobsBatch(savedCount, jobs.length);
+    const outputJobs = dedupeAndCleanJobs(jobs);
+    if (outputJobs.length < jobs.length) {
+        log.info(`Removed ${jobs.length - outputJobs.length} duplicate or invalid records before saving`);
     }
 
-    if (jobs.length > 0) {
-        log.info(`✓ All ${jobs.length} jobs saved to dataset`);
+    // ======================== PHASE 4: Save Remaining Results ========================
+    if (savedCount < outputJobs.length) {
+        const batch = outputJobs.slice(savedCount, outputJobs.length);
+        if (batch.length > 0) {
+            await Dataset.pushData(batch);
+            savedCount = outputJobs.length;
+            log.info(`✓ Saved jobs 1-${savedCount} to dataset (${savedCount}/${outputJobs.length})`);
+        }
+    }
+
+    if (outputJobs.length > 0) {
+        log.info(`✓ All ${outputJobs.length} jobs saved to dataset`);
     } else {
         log.warning('No jobs scraped. Check search parameters or site availability.');
     }
 
     // ======================== FINAL STATS ========================
     const executionTime = Math.round((Date.now() - startTime) / 1000);
-    const jobsPerSecond = jobs.length > 0 ? (jobs.length / executionTime).toFixed(2) : 0;
+    const jobsPerSecond = outputJobs.length > 0 ? (outputJobs.length / executionTime).toFixed(2) : 0;
 
     log.info('='.repeat(50));
     log.info(`Scraping Complete!`);
-    log.info(`  Jobs scraped: ${jobs.length}/${RESULTS_WANTED}`);
+    log.info(`  Jobs scraped: ${outputJobs.length}/${RESULTS_WANTED}`);
     log.info(`  Pages crawled: ${pageNum}`);
     log.info(`  Execution time: ${executionTime}s`);
     log.info(`  Speed: ${jobsPerSecond} jobs/sec`);
