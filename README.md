@@ -8,6 +8,7 @@ Extract Workopolis job listings at scale with rich, structured output for analyt
 - **Full job content capture** — Collect both `description_html` and `description_text` for each job.
 - **Detailed field coverage** — Get company, salary, job type, benefits, date posted, and requirements.
 - **Automatic pagination** — Continue through result pages until your target count is reached.
+- **Clean output records** — Duplicate items and incomplete rows are filtered before saving.
 - **Flexible search input** — Use either `keyword` + `location` or direct `startUrls`.
 - **Production-friendly output** — Export clean data for BI tools, sheets, and pipelines.
 
@@ -62,7 +63,7 @@ Each dataset item includes:
 | `benefits` | String \| Null | Benefits summary when available. |
 | `snippet` | String \| Null | Listing preview text. |
 | `requirements` | String \| Null | Requirement highlights from listing data. |
-| `description_html` | String \| Null | Full job description in sanitized HTML format. |
+| `description_html` | String \| Null | Full job description in sanitized HTML using semantic tags only such as `p`, `br`, `strong`, `li`, `ul`, and headings. |
 | `description_text` | String \| Null | Plain text description for analysis/search. |
 | `_source` | String | Source hostname. |
 | `_fetchedAt` | String | ISO timestamp of extraction. |
@@ -139,6 +140,10 @@ Each dataset item includes:
 ### Description Enrichment Is Automatic
 - Full descriptions are fetched automatically when listing payloads do not include them.
 - No extra input parameter is required for detail enrichment.
+
+### Output Is Cleaned Before Export
+- Duplicate job keys are removed automatically.
+- Empty values are omitted so downstream datasets stay cleaner.
 
 ### Use Practical Limits
 - Use `results_wanted: 20` for quick checks.

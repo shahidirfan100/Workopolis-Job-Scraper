@@ -9,9 +9,6 @@
   "readme": "../README.md",
   "input": "./input_schema.json",
   "output": "./output_schema.json",
-  "meta": {
-    "generatedBy": "GPT-5.3-Codex"
-  },
   "categories": [
     "JOBS"
   ],
