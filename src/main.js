@@ -392,12 +392,7 @@ Actor.main(async () => {
         throw new Error('Missing search input. Provide keyword or startUrls.');
     }
 
-    log.info('Starting Workopolis scraper', {
-        keyword: searchConfig.keyword || null,
-        location: searchConfig.location || null,
-        resultsWanted,
-        maxPages,
-    });
+    log.info(`Scraping ${resultsWanted} "${searchConfig.keyword}" jobs in ${searchConfig.location}`);
 
     let proxyUrl = null;
     if (input.proxyConfiguration) {
@@ -437,7 +432,7 @@ Actor.main(async () => {
             } catch (error) {
                 const message = error.message || String(error);
                 const blocked = /Blocked with HTML challenge|403|429|captcha|just a moment/i.test(message);
-                log.warning(`HTTP request failed (${attempt}/${MAX_HTTP_RETRIES})`, { url, message });
+                log.warning(`HTTP request failed (${attempt}/${MAX_HTTP_RETRIES}): ${message.slice(0, 80)}`);
 
                 if (blocked && attempt === MAX_HTTP_RETRIES) throw error;
                 if (attempt < MAX_HTTP_RETRIES) await wait(1000 * attempt);
@@ -483,7 +478,7 @@ Actor.main(async () => {
                 return body;
             } catch (error) {
                 const message = error.message || String(error);
-                log.warning(`HTML request failed (${attempt}/${MAX_HTTP_RETRIES})`, { url, message });
+                log.warning(`HTML request failed (${attempt}/${MAX_HTTP_RETRIES}): ${message.slice(0, 80)}`);
                 if (attempt < MAX_HTTP_RETRIES) await wait(1000 * attempt);
                 else throw error;
             }
@@ -528,7 +523,7 @@ Actor.main(async () => {
         const batch = batchBuffer.splice(0, batchBuffer.length);
         await Dataset.pushData(batch);
         savedCount += batch.length;
-        log.info(`Saved ${batch.length} jobs to dataset. Total saved: ${savedCount}`);
+        log.info(`Saved ${savedCount} jobs`);
     };
 
     const queueRecordForSave = async (record) => {
@@ -557,7 +552,6 @@ Actor.main(async () => {
     };
 
     const buildId = await discoverBuildId();
-    log.info(`Discovered buildId: ${buildId}`);
 
     let pageCursors = null;
     let currentPage = 1;
@@ -571,15 +565,13 @@ Actor.main(async () => {
             cursor,
         });
 
-        log.info(`Fetching listing page ${currentPage} via Next.js data API`, { pageUrl });
-
         const payload = normalizeJobsPayload(await requestJson(pageUrl, searchConfig.startSearchUrl));
         if (!payload.jobs.length) {
-            log.info(`No jobs returned on listing page ${currentPage}.`);
+            log.info(`Page ${currentPage}: empty`);
             break;
         }
 
-        log.info(`Listing page ${currentPage}: received ${payload.jobs.length} jobs`);
+        log.info(`Page ${currentPage}: ${payload.jobs.length} jobs`);
 
         for (const job of payload.jobs) {
             if (!job?.jobKey || seenJobKeys.has(job.jobKey)) continue;
@@ -602,8 +594,7 @@ Actor.main(async () => {
     }
 
     const jobs = [...jobsMeta.values()].slice(0, resultsWanted);
-    log.info(`Collected ${jobs.length} unique listing records from paginated API.`);
-    log.info(`Fetching full job descriptions via detail API with concurrency ${DETAIL_CONCURRENCY}.`);
+    log.info(`Collected ${jobs.length} jobs, fetching descriptions..`);
 
     await runWithConcurrency(jobs, DETAIL_CONCURRENCY, async ({ job, viewJobData }) => {
         let detail = null;
@@ -620,7 +611,7 @@ Actor.main(async () => {
             try {
                 detail = await requestJson(detailUrl, searchConfig.startSearchUrl);
             } catch (error) {
-                log.warning(`Detail fetch failed for ${job.jobKey}: ${error.message}`);
+                log.warning(`Detail fetch failed: ${error.message.slice(0, 80)}`);
             }
         }
 
