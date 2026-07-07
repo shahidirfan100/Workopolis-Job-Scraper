@@ -28,6 +28,7 @@ const buildBaseHeaders = ({ referer, userAgent }) => ({
     Accept: 'application/json, text/plain, */*',
     'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
     DNT: '1',
+    Origin: 'https://www.workopolis.com',
     Referer: referer ?? 'https://www.workopolis.com/',
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
@@ -182,8 +183,9 @@ const buildSearchUrl = ({ keyword, location, postedDate }) => {
     return url.href;
 };
 
-const buildNextDataUrl = ({ buildId, keyword, location, cursor }) => {
-    const url = new URL(`https://www.workopolis.com/_next/data/${buildId}/search.json`);
+const buildNextDataUrl = ({ keyword, location, cursor, locale }) => {
+    const url = new URL('https://www.workopolis.com/api/next/jobs');
+    url.searchParams.set('locale', locale || 'en-CA');
     if (keyword) url.searchParams.set('q', keyword);
     if (location) url.searchParams.set('l', location);
     if (cursor) url.searchParams.set('cursor', cursor);
@@ -446,50 +448,7 @@ Actor.main(async () => {
         throw new Error(`Failed to fetch ${url}`);
     };
 
-    const requestTextHttp = async (url, referer) => {
-        const userAgent = pickUserAgent();
-
-        for (let attempt = 1; attempt <= MAX_HTTP_RETRIES; attempt++) {
-            try {
-                await randomDelay();
-                const response = await gotScraping({
-                    url,
-                    timeout: { request: 30000 },
-                    retry: { limit: 0 },
-                    headers: {
-                        'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
-                        Referer: referer ?? 'https://www.workopolis.com/',
-                        'User-Agent': userAgent,
-                    },
-                    https: { rejectUnauthorized: true },
-                    ...(proxyUrl ? { proxyUrl } : {}),
-                });
-                return String(response.body || '');
-            } catch (error) {
-                const message = error.message || String(error);
-                log.warning(`HTTP text request failed (${attempt}/${MAX_HTTP_RETRIES})`, { url, message });
-                if (attempt < MAX_HTTP_RETRIES) await wait(1000 * attempt);
-                else throw error;
-            }
-        }
-
-        throw new Error(`Failed to fetch text from ${url}`);
-    };
-
     const requestJson = async (url, referer) => requestJsonHttp(url, referer);
-
-    const discoverBuildId = async () => {
-        const html = await requestTextHttp(searchConfig.startSearchUrl, 'https://www.workopolis.com/');
-        const buildId = html.match(/"buildId"\s*:\s*"([^"]+)"/)?.[1]
-            || html.match(/_next\/static\/([^/]+)\/_buildManifest\.js/)?.[1]
-            || null;
-
-        if (!buildId) {
-            throw new Error('Could not discover Workopolis buildId for paginated listing API.');
-        }
-
-        return buildId;
-    };
 
     const seenJobKeys = new Set();
     const jobsMeta = new Map();
@@ -540,21 +499,18 @@ Actor.main(async () => {
         return saveChain;
     };
 
-    const buildId = await discoverBuildId();
-    log.info(`Discovered paginated listing buildId: ${buildId}`);
-
     let currentCursor = null;
     let currentPage = 1;
 
     while (jobsMeta.size < resultsWanted && currentPage <= maxPages) {
         const pageUrl = buildNextDataUrl({
-            buildId,
             keyword: searchConfig.keyword,
             location: searchConfig.location,
             cursor: currentCursor,
+            locale: searchConfig.locale,
         });
 
-        log.info(`Fetching listing page ${currentPage} via next-data API`, { pageUrl });
+        log.info(`Fetching listing page ${currentPage} via jobs API`, { pageUrl });
 
         const payload = normalizeJobsPayload(await requestJson(pageUrl, searchConfig.startSearchUrl));
         if (!payload.jobs.length) {
