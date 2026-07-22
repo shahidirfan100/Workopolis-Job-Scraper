@@ -4,38 +4,41 @@ import path from 'node:path';
 import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
+import { CookieJar } from 'tough-cookie';
 
 const MAX_HTTP_RETRIES = 3;
 const DETAIL_CONCURRENCY = 6;
 const DATASET_BATCH_SIZE = 25;
-const MIN_DELAY_MS = 300;
-const MAX_DELAY_MS = 900;
-const HTTP_USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
-];
+
+const cookieJar = new CookieJar();
+
+const HEADER_GEN_OPTIONS = {
+    browsers: [
+        { name: 'chrome', minVersion: 120, maxVersion: 132 },
+        { name: 'firefox', minVersion: 120, maxVersion: 132 },
+        { name: 'edge', minVersion: 120, maxVersion: 132 },
+        { name: 'safari', minVersion: 16, maxVersion: 18 },
+    ],
+    devices: ['desktop', 'mobile'],
+    locales: ['en-CA', 'en-US', 'en-GB'],
+};
+
+let sessionCounter = 0;
+const sessionToken = { unique: ++sessionCounter };
 
 const wait = (ms) => new Promise((resolve) => {
     setTimeout(resolve, ms);
 });
-const randomDelay = () => wait(MIN_DELAY_MS + Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1)));
-const pickUserAgent = () => HTTP_USER_AGENTS[Math.floor(Math.random() * HTTP_USER_AGENTS.length)];
+
+const realisticDelay = () => {
+    const base = 200 + Math.floor(Math.random() * 400);
+    const extra = Math.random() < 0.15
+        ? 1000 + Math.floor(Math.random() * 2000)
+        : 0;
+    return wait(base + extra);
+};
 
 const toTrimmedString = (value) => (typeof value === 'string' ? value.trim() : '');
-
-const buildBaseHeaders = ({ referer, userAgent }) => ({
-    Accept: 'application/json, text/plain, */*',
-    'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
-    DNT: '1',
-    Origin: 'https://www.workopolis.com',
-    Referer: referer ?? 'https://www.workopolis.com/',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    'User-Agent': userAgent,
-    'X-Requested-With': 'XMLHttpRequest',
-});
 
 const parseJsonBody = (body, url) => {
     if (typeof body === 'object' && body !== null) return body;
@@ -392,7 +395,8 @@ Actor.main(async () => {
         throw new Error('Missing search input. Provide keyword or startUrls.');
     }
 
-    log.info(`Scraping ${resultsWanted} "${searchConfig.keyword}" jobs in ${searchConfig.location}`);
+    const locationLabel = searchConfig.location ? ` in ${searchConfig.location}` : ' across Canada';
+    log.info(`Scraping ${resultsWanted} "${searchConfig.keyword}" jobs${locationLabel}`);
 
     let proxyUrl = null;
     if (input.proxyConfiguration) {
@@ -414,25 +418,41 @@ Actor.main(async () => {
         }
     }
 
-    const requestJsonHttp = async (url, referer) => {
-        const userAgent = pickUserAgent();
-
+    const requestWithHeaders = async (url, { isHtml = false } = {}) => {
         for (let attempt = 1; attempt <= MAX_HTTP_RETRIES; attempt++) {
             try {
-                await randomDelay();
+                await realisticDelay();
                 const response = await gotScraping({
                     url,
                     timeout: { request: 30000 },
                     retry: { limit: 0 },
-                    headers: buildBaseHeaders({ referer, userAgent }),
+                    useHeaderGenerator: true,
+                    headerGeneratorOptions: HEADER_GEN_OPTIONS,
+                    sessionToken,
+                    cookieJar,
+                    headers: {
+                        Accept: isHtml
+                            ? 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                            : 'application/json, text/plain, */*',
+                    },
                     https: { rejectUnauthorized: true },
                     ...(proxyUrl ? { proxyUrl } : {}),
                 });
+                const body = String(response.body || '');
+                if (isHtml) {
+                    if (
+                        body.includes('<title>Just a moment...')
+                        || body.includes('cf-browser-verification')
+                    ) {
+                        throw new Error(`Blocked with HTML challenge from ${url}`);
+                    }
+                    return body;
+                }
                 return parseJsonBody(response.body, url);
             } catch (error) {
                 const message = error.message || String(error);
                 const blocked = /Blocked with HTML challenge|403|429|captcha|just a moment/i.test(message);
-                log.warning(`HTTP request failed (${attempt}/${MAX_HTTP_RETRIES}): ${message.slice(0, 80)}`);
+                log.warning(`Request failed (${attempt}/${MAX_HTTP_RETRIES}): ${message.slice(0, 80)}`);
 
                 if (blocked && attempt === MAX_HTTP_RETRIES) throw error;
                 if (attempt < MAX_HTTP_RETRIES) await wait(1000 * attempt);
@@ -442,55 +462,11 @@ Actor.main(async () => {
         throw new Error(`Failed to fetch ${url}`);
     };
 
-    const requestTextHtml = async (url, referer) => {
-        const userAgent = pickUserAgent();
-
-        for (let attempt = 1; attempt <= MAX_HTTP_RETRIES; attempt++) {
-            try {
-                await randomDelay();
-                const response = await gotScraping({
-                    url,
-                    timeout: { request: 30000 },
-                    retry: { limit: 0 },
-                    headers: {
-                        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
-                        DNT: '1',
-                        Origin: 'https://www.workopolis.com',
-                        Referer: referer ?? 'https://www.workopolis.com/',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'same-origin',
-                        'Sec-Fetch-User': '?1',
-                        'Upgrade-Insecure-Requests': '1',
-                        'User-Agent': userAgent,
-                    },
-                    https: { rejectUnauthorized: true },
-                    ...(proxyUrl ? { proxyUrl } : {}),
-                });
-                const body = String(response.body || '');
-                if (
-                    body.includes('<title>Just a moment...')
-                    || body.includes('cf-browser-verification')
-                ) {
-                    throw new Error(`Blocked with HTML challenge from ${url}`);
-                }
-                return body;
-            } catch (error) {
-                const message = error.message || String(error);
-                log.warning(`HTML request failed (${attempt}/${MAX_HTTP_RETRIES}): ${message.slice(0, 80)}`);
-                if (attempt < MAX_HTTP_RETRIES) await wait(1000 * attempt);
-                else throw error;
-            }
-        }
-
-        throw new Error(`Failed to fetch HTML from ${url}`);
-    };
-
-    const requestJson = async (url, referer) => requestJsonHttp(url, referer);
+    const requestJson = (url) => requestWithHeaders(url, { isHtml: false });
+    const requestTextHtml = (url) => requestWithHeaders(url, { isHtml: true });
 
     const discoverBuildId = async () => {
-        const html = await requestTextHtml(searchConfig.startSearchUrl, 'https://www.workopolis.com/');
+        const html = await requestTextHtml(searchConfig.startSearchUrl);
         const buildId = html.match(/"buildId"\s*:\s*"([^"]+)"/)?.[1]
             || html.match(/_next\/static\/([^/]+)\/_buildManifest\.js/)?.[1]
             || null;
@@ -503,7 +479,6 @@ Actor.main(async () => {
     };
 
     const seenJobKeys = new Set();
-    const jobsMeta = new Map();
     const savedJobKeys = new Set();
     const batchBuffer = [];
     let saveChain = Promise.resolve();
@@ -553,11 +528,10 @@ Actor.main(async () => {
 
     const buildId = await discoverBuildId();
 
-    let pageCursors = null;
+    let cursor = null;
     let currentPage = 1;
 
-    while (jobsMeta.size < resultsWanted && currentPage <= maxPages) {
-        const cursor = pageCursors?.[String(currentPage)] || null;
+    while (savedCount < resultsWanted && currentPage <= maxPages) {
         const pageUrl = buildNextDataUrl({
             buildId,
             keyword: searchConfig.keyword,
@@ -565,62 +539,54 @@ Actor.main(async () => {
             cursor,
         });
 
-        const payload = normalizeJobsPayload(await requestJson(pageUrl, searchConfig.startSearchUrl));
+        const payload = normalizeJobsPayload(await requestJson(pageUrl));
         if (!payload.jobs.length) {
             log.info(`Page ${currentPage}: empty`);
             break;
         }
 
-        log.info(`Page ${currentPage}: ${payload.jobs.length} jobs`);
+        const newJobs = payload.jobs.filter((j) => j?.jobKey && !seenJobKeys.has(j.jobKey));
+        const remaining = resultsWanted - savedCount;
+        const jobsToTake = newJobs.slice(0, remaining);
 
-        for (const job of payload.jobs) {
-            if (!job?.jobKey || seenJobKeys.has(job.jobKey)) continue;
-            seenJobKeys.add(job.jobKey);
-            jobsMeta.set(job.jobKey, {
-                job,
-                viewJobData: payload.viewJobData?.jobKey === job.jobKey ? payload.viewJobData : null,
-            });
-        }
+        for (const job of jobsToTake) seenJobKeys.add(job.jobKey);
 
-        if (payload.pageCursors && Object.keys(payload.pageCursors).length) {
-            pageCursors = payload.pageCursors;
-        } else if (!cursor) {
-            break;
-        }
+        if (!jobsToTake.length) break;
 
-        const hasNext = pageCursors && pageCursors[String(currentPage + 1)];
-        if (!hasNext) break;
+        log.info(`Page ${currentPage}: ${jobsToTake.length} jobs`);
+
+        await runWithConcurrency(jobsToTake, DETAIL_CONCURRENCY, async (job) => {
+            const viewJobData = payload.viewJobData?.jobKey === job.jobKey ? payload.viewJobData : null;
+            let detail = null;
+
+            if (!viewJobData?.jobDescriptionHtml && !viewJobData?.description) {
+                const detailUrl = buildJobDetailUrl({
+                    jobKey: job.jobKey,
+                    locale: searchConfig.locale,
+                    continueUrl: searchConfig.startSearchUrl,
+                    jobCardTrackingKey: job.jobCardTrackingKey || null,
+                });
+
+                try {
+                    detail = await requestJson(detailUrl);
+                } catch (error) {
+                    log.warning(`Detail fetch failed: ${error.message.slice(0, 80)}`);
+                }
+            }
+
+            const record = buildRecord(job, detail, { viewJobData });
+            await queueRecordForSave(record);
+        });
+
+        await saveChain;
+        await flushBatch(true);
+
+        if (savedCount >= resultsWanted) break;
+
+        cursor = payload.nextCursor;
+        if (!cursor) break;
         currentPage++;
     }
-
-    const jobs = [...jobsMeta.values()].slice(0, resultsWanted);
-    log.info(`Collected ${jobs.length} jobs, fetching descriptions..`);
-
-    await runWithConcurrency(jobs, DETAIL_CONCURRENCY, async ({ job, viewJobData }) => {
-        let detail = null;
-        const needsDetail = !viewJobData?.jobDescriptionHtml && !viewJobData?.description;
-
-        if (needsDetail) {
-            const detailUrl = buildJobDetailUrl({
-                jobKey: job.jobKey,
-                locale: searchConfig.locale,
-                continueUrl: searchConfig.startSearchUrl,
-                jobCardTrackingKey: job.jobCardTrackingKey || null,
-            });
-
-            try {
-                detail = await requestJson(detailUrl, searchConfig.startSearchUrl);
-            } catch (error) {
-                log.warning(`Detail fetch failed: ${error.message.slice(0, 80)}`);
-            }
-        }
-
-        const record = buildRecord(job, detail, { viewJobData });
-        await queueRecordForSave(record);
-    });
-
-    await saveChain;
-    await flushBatch(true);
 
     if (duplicateCount > 0) {
         log.info(`Skipped ${duplicateCount} duplicate records before dataset push.`);

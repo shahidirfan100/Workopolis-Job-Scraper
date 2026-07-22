@@ -1,16 +1,17 @@
 # Workopolis Jobs Scraper
 
-Extract Workopolis job listings at scale with rich, structured output for analytics, lead generation, and recruitment intelligence. Collect job titles, companies, locations, compensation details, and full descriptions in a dataset-ready format. Built for fast, reliable collection and consistent downstream use.
+Extract Workopolis job listings at scale with rich, structured output for analytics, lead generation, and recruitment intelligence. Collect job titles, companies, locations, salary data, and full descriptions in a dataset-ready format. Data saves incrementally page by page so partial results are never lost.
 
 ## Features
 
-- **High-volume job collection** — Gather large job datasets across keywords and locations.
-- **Full job content capture** — Collect both `description_html` and `description_text` for each job.
+- **High-volume job collection** — Gather large job datasets across Canada with no hard limits on results or pages.
+- **Full job content capture** — Collect both `description_html` and `description_text` for every job.
 - **Detailed field coverage** — Get company, salary, job type, benefits, date posted, and requirements.
 - **Automatic pagination** — Continue through result pages until your target count is reached.
+- **Nationwide search** — Leave location empty to search all of Canada.
+- **Incremental saving** — Each page's results are saved as you go, not batched at the end.
 - **Clean output records** — Duplicate items and incomplete rows are filtered before saving.
-- **Flexible search input** — Use either `keyword` + `location` or direct `startUrls`.
-- **Production-friendly output** — Export clean data for BI tools, sheets, and pipelines.
+- **Flexible search input** — Use `keyword` alone, `keyword` + `location`, or direct `startUrls`.
 
 ## Use Cases
 
@@ -37,10 +38,10 @@ Use historical and recurring job listing data for research projects in labor eco
 |-----------|------|----------|---------|-------------|
 | `startUrls` | Array | No | — | Optional list of Workopolis search URLs to use directly. |
 | `keyword` | String | No | `software engineer` | Search keyword, title, or skill phrase. |
-| `location` | String | No | `Toronto` | Search location (city, region, or province). |
+| `location` | String | No | — | Search location. Leave empty to search nationwide. |
 | `posted_date` | String | No | `anytime` | Recency filter: `anytime`, `24h`, `7d`, `30d`. |
-| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect. |
-| `max_pages` | Integer | No | `10` | Safety limit for result pages. |
+| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect. No upper limit. |
+| `max_pages` | Integer | No | `10` | Safety limit for result pages. No upper limit. |
 | `proxyConfiguration` | Object | No | Apify Proxy Residential | Proxy setup for stability and reliability. |
 
 ---
@@ -72,17 +73,18 @@ Each dataset item includes:
 
 ## Usage Examples
 
-### Basic Run
+### Nationwide Search
+
+Search all of Canada with no location filter:
 
 ```json
 {
   "keyword": "software engineer",
-  "location": "Toronto",
-  "results_wanted": 20
+  "results_wanted": 50
 }
 ```
 
-### Recent Jobs Only
+### Location-Specific Search
 
 ```json
 {
@@ -101,6 +103,17 @@ Each dataset item includes:
     { "url": "https://www.workopolis.com/search?q=full+stack+developer&l=Calgary" }
   ],
   "results_wanted": 50
+}
+```
+
+### Large Collection Run
+
+```json
+{
+  "keyword": "nurse",
+  "location": "Toronto",
+  "results_wanted": 1000,
+  "max_pages": 50
 }
 ```
 
@@ -135,11 +148,15 @@ Each dataset item includes:
 
 ### Start With Focused Queries
 - Use specific role names and locations for higher relevance.
-- Run broader queries only when you need larger discovery datasets.
+- Run broader queries (nationwide, no location) when you need large discovery datasets.
 
 ### Description Enrichment Is Automatic
 - Full descriptions are fetched automatically when listing payloads do not include them.
 - No extra input parameter is required for detail enrichment.
+
+### Data Saves Incrementally
+- Results are saved page by page as they are collected.
+- If a run is interrupted, all data up to that point is preserved in the dataset.
 
 ### Output Is Cleaned Before Export
 - Duplicate job keys are removed automatically.
@@ -175,7 +192,10 @@ Each dataset item includes:
 ## Frequently Asked Questions
 
 ### How many jobs can I collect?
-You can collect up to your configured limits. Set `results_wanted` and `max_pages` based on your target volume.
+There is no hard limit. Set `results_wanted` and `max_pages` to whatever your project requires. The actor stops when either limit is reached.
+
+### Can I search nationwide without a location?
+Yes. Leave the `location` field empty and the actor searches all of Canada.
 
 ### Can I search by city and keyword together?
 Yes. Use `keyword` and `location` together for focused results.
@@ -190,7 +210,10 @@ Yes. Provide one or more URLs in `startUrls`.
 Some job listings do not provide every field (for example salary or benefits). Missing source data is returned as `null`.
 
 ### Is pagination automatic?
-Yes. The actor handles pagination until limits are reached.
+Yes. The actor handles pagination until your result or page limit is reached.
+
+### What happens if a run is interrupted?
+Data is saved page by page as it is collected. If a run stops early, all results up to that point remain in the dataset.
 
 ---
 

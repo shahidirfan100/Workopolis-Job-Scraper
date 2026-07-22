@@ -26,10 +26,8 @@
     "location": {
       "title": "Location",
       "type": "string",
-      "description": "Location to search. Examples: 'Toronto', 'Vancouver', 'Calgary'",
-      "editor": "textfield",
-      "default": "Toronto",
-      "prefill": "Toronto"
+      "description": "Location to search. Leave empty to search nationwide. Examples: 'Toronto', 'Vancouver', 'Calgary'",
+      "editor": "textfield"
     },
     "posted_date": {
       "title": "Posted Date Filter",
@@ -50,7 +48,6 @@
       "type": "integer",
       "description": "Maximum number of jobs to collect",
       "minimum": 1,
-      "maximum": 5000,
       "default": 20,
       "prefill": 20,
       "editor": "number"
@@ -60,7 +57,6 @@
       "type": "integer",
       "description": "Safety limit on pages to crawl",
       "minimum": 1,
-      "maximum": 200,
       "default": 10,
       "prefill": 10,
       "editor": "number"

@@ -7,7 +7,8 @@
     "apify": "^3.7.2",
     "cheerio": "^1.2.0",
     "crawlee": "^3.17.0",
-    "got-scraping": "^4.2.1"
+    "got-scraping": "^4.2.1",
+    "tough-cookie": "^6.0.2"
   },
   "devDependencies": {
     "@apify/eslint-config": "^2.0.0",
