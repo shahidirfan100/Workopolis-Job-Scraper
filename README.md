@@ -1,75 +1,73 @@
-# Workopolis Jobs Scraper
+## What does Workopolis Jobs Scraper do?
 
-Extract Workopolis job listings at scale with rich, structured output for analytics, lead generation, and recruitment intelligence. Collect job titles, companies, locations, salary data, and full descriptions in a dataset-ready format. Data saves incrementally page by page so partial results are never lost.
+Workopolis Jobs Scraper extracts job listings from Workopolis.com, one of Canada's largest job search platforms. Enter a keyword and optional location to collect job titles, company names, locations, salary data, employment types, work arrangements, and full job descriptions. The Actor returns structured data ready for market research, recruitment intelligence, and talent analytics.
 
-## Features
+## Why use Workopolis Jobs Scraper?
 
-- **High-volume job collection** — Gather large job datasets across Canada with no hard limits on results or pages.
-- **Full job content capture** — Collect both `description_html` and `description_text` for every job.
-- **Detailed field coverage** — Get company, salary, job type, benefits, date posted, and requirements.
-- **Automatic pagination** — Continue through result pages until your target count is reached.
-- **Nationwide search** — Leave location empty to search all of Canada.
-- **Incremental saving** — Each page's results are saved as you go, not batched at the end.
-- **Clean output records** — Duplicate items and incomplete rows are filtered before saving.
-- **Flexible search input** — Use `keyword` alone, `keyword` + `location`, or direct `startUrls`.
+- **Nationwide Canadian coverage** - Search all of Canada or target specific cities like Toronto, Vancouver, Calgary, or Montreal.
+- **Rich job-level detail** - Collect salary ranges, employment types, remote/hybrid settings, benefits, requirements, and full descriptions in both HTML and plain text.
+- **Scalable collection** - Set your desired result count with no hard upper limit. The Actor paginates automatically through results.
+- **Automation-ready output** - Export datasets to JSON, CSV, Excel, or connect via API, webhooks, and no-code tools.
+- **Incremental data saving** - Results are saved page by page as they are collected. If a run is interrupted, all data up to that point is preserved.
 
-## Use Cases
+## What data can you extract from Workopolis?
 
-### Talent Market Research
-Track hiring volume and role trends by city, title, and recency. Build recurring reports for workforce and labor-market insights.
+| Field | Description |
+|-------|-------------|
+| `title` | Job title |
+| `company` | Employer name |
+| `location` | Job location with city and province |
+| `salary` | Salary or compensation range when available |
+| `employmentType` | Employment type such as full-time, contract, or part-time |
+| `workSettings` | Work arrangement such as remote, hybrid, or on-site |
+| `datePosted` | Posted or published date |
+| `benefits` | Benefits summary when listed |
+| `requirements` | Required skills or qualifications |
+| `description_html` | Full job description in sanitized HTML |
+| `description_text` | Full job description as plain text |
+| `url` | Direct Workopolis job page URL |
+| `jobKey` | Unique job identifier |
 
-### Recruitment Intelligence
-Monitor who is hiring, where demand is increasing, and which roles are growing fastest. Compare companies and locations over time.
+## How to use Workopolis Jobs Scraper
 
-### Compensation Benchmarking
-Capture available salary data to benchmark compensation by role and region. Support planning with real listing-level evidence.
-
-### Job Board Aggregation
-Feed structured Workopolis data into internal dashboards or multi-source job platforms. Maintain consistent schemas across sources.
-
-### Academic and Economic Analysis
-Use historical and recurring job listing data for research projects in labor economics, education, and regional development.
-
----
+1. Open the Actor on Apify Store.
+2. Enter a job keyword such as `software engineer` or `data analyst`.
+3. Optionally enter a location such as `Toronto` or leave it blank to search all of Canada.
+4. Set the maximum number of jobs to collect and optional recency filter.
+5. Run the Actor and download the dataset when complete.
 
 ## Input Parameters
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `startUrls` | Array | No | — | Optional list of Workopolis search URLs to use directly. |
-| `keyword` | String | No | `software engineer` | Search keyword, title, or skill phrase. |
-| `location` | String | No | — | Search location. Leave empty to search nationwide. |
-| `posted_date` | String | No | `anytime` | Recency filter: `anytime`, `24h`, `7d`, `30d`. |
-| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect. No upper limit. |
-| `max_pages` | Integer | No | `10` | Safety limit for result pages. No upper limit. |
-| `proxyConfiguration` | Object | No | Apify Proxy Residential | Proxy setup for stability and reliability. |
-
----
+| `keyword` | String | No | `software engineer` | Job search keyword, title, or skill phrase |
+| `location` | String | No | - | Location to search. Leave empty for nationwide |
+| `posted_date` | String | No | `anytime` | Recency filter: `anytime`, `24h`, `7d`, or `30d` |
+| `startUrls` | Array | No | `[]` | Custom Workopolis search URLs to use instead of keyword and location |
+| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect |
+| `max_pages` | Integer | No | `10` | Safety limit for pagination depth |
+| `proxyConfiguration` | Object | No | Apify Proxy | Proxy settings for stable collection |
 
 ## Output Data
 
-Each dataset item includes:
-
 | Field | Type | Description |
 |-------|------|-------------|
-| `url` | String | Direct Workopolis view-job URL. |
-| `jobKey` | String | Unique job identifier. |
-| `title` | String | Job title. |
-| `company` | String | Employer name. |
-| `location` | String | Job location. |
-| `salary` | String \| Null | Salary or compensation text when available. |
-| `employmentType` | String \| Null | Employment type (full-time, contract, etc.). |
-| `workSettings` | String \| Null | Work arrangement details (for example, remote/hybrid). |
-| `datePosted` | String \| Number \| Null | Posted/published date data from source. |
-| `benefits` | String \| Null | Benefits summary when available. |
-| `snippet` | String \| Null | Listing preview text. |
-| `requirements` | String \| Null | Requirement highlights from listing data. |
-| `description_html` | String \| Null | Full job description in sanitized HTML using semantic tags only such as `p`, `br`, `strong`, `li`, `ul`, and headings. |
-| `description_text` | String \| Null | Plain text description for analysis/search. |
-| `_source` | String | Source hostname. |
-| `_fetchedAt` | String | ISO timestamp of extraction. |
-
----
+| `url` | String | Direct Workopolis job page URL |
+| `jobKey` | String | Unique job identifier |
+| `title` | String | Job title |
+| `company` | String | Employer name |
+| `location` | String | Job location |
+| `salary` | String or Null | Salary or compensation range |
+| `employmentType` | String or Null | Employment type such as Full-time, Contract |
+| `workSettings` | String or Null | Work arrangement such as Remote, Hybrid |
+| `datePosted` | String or Null | Posted date |
+| `benefits` | String or Null | Benefits summary when available |
+| `snippet` | String or Null | Listing preview text |
+| `requirements` | String or Null | Required skills or qualifications |
+| `description_html` | String or Null | Full job description in sanitized HTML |
+| `description_text` | String or Null | Full job description as plain text |
+| `_source` | String | Source hostname |
+| `_fetchedAt` | String | ISO timestamp of extraction |
 
 ## Usage Examples
 
@@ -84,7 +82,9 @@ Search all of Canada with no location filter:
 }
 ```
 
-### Location-Specific Search
+### Location-Specific Search with Recency Filter
+
+Collect recent jobs in a specific city with a 7-day recency filter:
 
 ```json
 {
@@ -97,6 +97,8 @@ Search all of Canada with no location filter:
 
 ### URL-Driven Search
 
+Use one or more custom Workopolis search URLs directly:
+
 ```json
 {
   "startUrls": [
@@ -108,6 +110,8 @@ Search all of Canada with no location filter:
 
 ### Large Collection Run
 
+Collect a large dataset for analysis or monitoring:
+
 ```json
 {
   "keyword": "nurse",
@@ -116,8 +120,6 @@ Search all of Canada with no location filter:
   "max_pages": 50
 }
 ```
-
----
 
 ## Sample Output
 
@@ -131,104 +133,85 @@ Search all of Canada with no location filter:
   "salary": "$95,000 - $120,000/year",
   "employmentType": "Full-time",
   "workSettings": "Hybrid",
-  "datePosted": 1770755092538,
+  "datePosted": "2026-07-15",
   "benefits": "Health insurance, Paid time off",
   "snippet": "Build and maintain scalable backend services...",
   "requirements": "Node.js, TypeScript, APIs",
   "description_html": "<p>Full role description...</p>",
   "description_text": "Full role description...",
   "_source": "workopolis.com",
-  "_fetchedAt": "2026-02-13T12:00:00.000Z"
+  "_fetchedAt": "2026-07-28T10:30:00.000Z"
 }
 ```
 
----
-
 ## Tips for Best Results
 
-### Start With Focused Queries
-- Use specific role names and locations for higher relevance.
-- Run broader queries (nationwide, no location) when you need large discovery datasets.
-
-### Description Enrichment Is Automatic
-- Full descriptions are fetched automatically when listing payloads do not include them.
-- No extra input parameter is required for detail enrichment.
-
-### Data Saves Incrementally
-- Results are saved page by page as they are collected.
-- If a run is interrupted, all data up to that point is preserved in the dataset.
-
-### Output Is Cleaned Before Export
-- Duplicate job keys are removed automatically.
-- Empty values are omitted so downstream datasets stay cleaner.
-
-### Use Practical Limits
-- Use `results_wanted: 20` for quick checks.
-- Increase to 100+ for reporting and trend analysis.
-
-### Use Reliable Proxy Settings
-- Keep Apify Proxy enabled for stable collection.
-- Residential proxy groups are recommended for consistency.
-
----
+- Use specific job titles and Canadian cities for more relevant results.
+- Start with `results_wanted: 20` for quick testing before scaling up.
+- Leave `location` empty to search across all of Canada for broader discovery.
+- Use the `posted_date` filter to focus on the most recent listings.
+- Enable Apify Proxy with residential groups for stable long-running collections.
+- Some fields such as salary or benefits appear as null when the listing does not include that information.
+- If a run is interrupted, all data collected up to that point remains in the dataset.
 
 ## Integrations
 
-- **Google Sheets** — Share job datasets with non-technical teams.
-- **Airtable** — Build searchable hiring intelligence bases.
-- **Make** — Automate recurring extraction and notifications.
-- **Zapier** — Trigger workflows from fresh job data.
-- **Webhooks** — Send output directly to your own endpoints.
+- **Google Sheets** - Send job data to spreadsheets for team collaboration.
+- **Airtable** - Build searchable hiring intelligence bases.
+- **Make** - Automate recurring extraction and downstream notifications.
+- **Zapier** - Trigger workflows from fresh job data.
+- **Webhooks** - Send output directly to your own systems.
+- **API** - Access datasets programmatically from your applications.
 
 ### Export Formats
 
-- **JSON** — Application and pipeline friendly.
-- **CSV** — Spreadsheet analysis and BI imports.
-- **Excel** — Business reporting workflows.
-- **XML** — Legacy system integrations.
-
----
+Apify datasets can be downloaded in JSON, CSV, Excel, XML, and other supported formats.
 
 ## Frequently Asked Questions
 
 ### How many jobs can I collect?
-There is no hard limit. Set `results_wanted` and `max_pages` to whatever your project requires. The actor stops when either limit is reached.
+
+There is no hard limit. Set `results_wanted` and `max_pages` to whatever your project requires. The Actor stops when either limit is reached.
 
 ### Can I search nationwide without a location?
-Yes. Leave the `location` field empty and the actor searches all of Canada.
 
-### Can I search by city and keyword together?
-Yes. Use `keyword` and `location` together for focused results.
+Yes. Leave the `location` field empty and the Actor searches all of Canada.
 
-### Are full descriptions included?
-Yes. The actor automatically enriches jobs with both HTML and plain text descriptions when needed.
+### Are full job descriptions included?
 
-### Can I run from a custom search URL?
-Yes. Provide one or more URLs in `startUrls`.
+Yes. The Actor automatically enriches listings with both HTML and plain text descriptions when the initial payload does not include them.
+
+### Can I use custom search URLs?
+
+Yes. Provide one or more Workopolis search URLs in the `startUrls` field. These are used instead of the keyword and location inputs.
 
 ### Why do some fields appear empty?
-Some job listings do not provide every field (for example salary or benefits). Missing source data is returned as `null`.
 
-### Is pagination automatic?
-Yes. The actor handles pagination until your result or page limit is reached.
+Some job listings do not include every field such as salary, benefits, or requirements. Missing source data is returned as null.
 
 ### What happens if a run is interrupted?
+
 Data is saved page by page as it is collected. If a run stops early, all results up to that point remain in the dataset.
 
----
+### Can I run this Actor on a schedule?
+
+Yes. Apify Console supports scheduling runs hourly, daily, weekly, or at custom intervals.
+
+### Is this Actor suitable for non-technical users?
+
+Yes. The Actor can be run from Apify Console with form-based inputs, and the dataset can be downloaded without writing code.
+
+## Related Actors
+
+- [Foundit Jobs Scraper](https://apify.com/shahidirfan/foundit-jobs-scraper) - Extract job listings from Foundit (formerly Monster)
+- [USA Jobs Scraper](https://apify.com/shahidirfan/usa-jobs-scraper) - Collect job listings from major US job boards
+- [Bayt Jobs Scraper](https://apify.com/shahidirfan/Bayt-Jobs-Scraper) - Scrape job postings from Bayt.com
+- [APEC Jobs Scraper](https://apify.com/shahidirfan/apec-jobs-scraper) - Extract executive and professional jobs from APEC.fr
 
 ## Support
 
-For issues or improvement requests, open a message through the Apify actor page.
-
-### Resources
-
-- [Apify Documentation](https://docs.apify.com/)
-- [Apify API Reference](https://docs.apify.com/api/v2)
-- [Schedules](https://docs.apify.com/platform/schedules)
-
----
+For issues, feature requests, or custom Actor development, use the Issues tab on the Actor page or contact the developer through Apify.
 
 ## Legal Notice
 
-Use this actor only for legitimate data collection and analysis. You are responsible for compliance with Workopolis terms and all applicable laws in your jurisdiction.
+This Actor is designed for legitimate data collection from publicly available Workopolis listings. Users are responsible for complying with Workopolis terms of service and all applicable laws in their jurisdiction.
