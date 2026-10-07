@@ -1,26 +1,40 @@
 ## Selected API
+
+### Listing (primary)
+- Endpoint: `https://www.workopolis.com/search`
+- Method: `GET`
+- Auth: None. Requests must present a browser-consistent TLS/header fingerprint, otherwise the edge may return an HTML challenge.
+- Response: HTML containing a `script#__NEXT_DATA__` hydration payload. The job results live at `props.pageProps` and include `jobs`, `pageCursors`, `currentPageNumber`, and `resultCount`.
+- Pagination: `cursor` query parameter. Read the next value from `pageProps.pageCursors[String(currentPageNumber + 1)]` and pass it as `?cursor=...` on the next request. When no `pageCursors` entry for the next page exists, the listing is exhausted.
+- Search parameters: `q` (keyword), `l` (location), `t` (recency: `anytime`, `24h`, `7d`, `30d`), `cursor` (pagination).
+- Page size: 25 listings per page.
+- Fields available: `jobKey`, `snippet`, `title`, `jobCardTrackingKey`, `encodedUrl`, `requirements`, `jobTypes`, `benefits`, `remoteAttributes`, `uncategorized`, `botUrl`, `location`, `company`, `companyRating`, `salaryInfo`, `indeedApply`, `dateOnIndeed`, `sponsored`, `auction`, `camk`, `companyPageUrl`, `encodedJobClickPingUrl`.
+
+### Listing (secondary, non-paginated)
 - Endpoint: `https://www.workopolis.com/api/next/jobs`
 - Method: `GET`
-- Auth: None, but direct non-browser HTTP can be challenged by Cloudflare
-- Pagination: `cursor` query parameter, with `nextCursor` and `pageCursors` in payload
-- Fields available: `jobKey`, `title`, `company`, `companyName`, `location`, `formattedLocation`, `salaryInfo`, `salary`, `jobTypes`, `employmentType`, `dateOnIndeed`, `datePublished`, `snippet`, `benefits`, `requirements`, `remoteAttributes`, `jobCardTrackingKey`, `viewJobData`, `currentPageNumber`, `nextCursor`
-- Fields currently missing in the legacy HTML actor: stable `jobKey`, full description HTML/text, structured salary coverage, work setting data, benefits, requirements, and cleaner pagination metadata
-- Field count: 20+ fields vs the legacy HTML parser's smaller field set
+- Parameters: `q`, `l`, `locale` (required). Note: this endpoint ignores cursor/start/page parameters and always returns the first 20 results, so it is not used for pagination.
 
-## Secondary API
+### Detail (enrichment)
 - Endpoint: `https://www.workopolis.com/api/next/job`
 - Method: `GET`
-- Auth: None, but uses the same browser/session constraints as the listing endpoint
-- Purpose: enrich each listing with description, employer fallback data, date, and location backfill
-- Key parameters: `key`, `locale`, `indeedApplyContinueUrl`, optional `jobCardTrackingKey`
+- Auth: None, same browser/session constraints as the listing endpoint.
+- Purpose: enrich each listing with full description HTML, employer fallback data, work settings, benefits, qualifications, base salary, and date fields.
+- Key parameters: `key` (jobKey), `locale`, `indeedApplyContinueUrl` (required), optional `jobCardTrackingKey`.
+- Response fields: `jobTitle`, `jobKey`, `normalizedTitle`, `displayTitle`, `formattedLocation`, `city`, `state`, `jobTypes`, `workSettings`, `jobDescriptionHtml`, `employerName`, `compensation`, `dateOnIndeed`, `datePublished`, `benefits`, `qualifications`, `baseSalary`, `expired`, and more.
 
-## Optional Candidate Rejected
+## Rejected Candidate
 - Endpoint pattern: `https://www.workopolis.com/_next/data/{buildId}/search.json`
-- Rejected because the `buildId` changes often and the response path is less stable than `/api/next/jobs`
-- It also failed the resiliency requirement because stale build IDs or Cloudflare HTML responses caused bootstrap failures
+- Rejected because the `buildId` changes on every deployment and stale values cause request failures. The HTML hydration payload at `/search` exposes the same `pageProps` shape without depending on `buildId`, so the Actor reads results from there.
 
 ## Selection Notes
-- `/api/next/jobs` is the best primary endpoint because it is buildId-free, supports cursor pagination, and returns the richest search payload
-- `/api/next/job` is the best detail endpoint because it fills missing descriptions and backfills incomplete listing fields
-- The final implementation is fully API-based and uses direct HTTP requests only
-- `description_html` is restricted to semantic content tags only, with layout tags, scripts, styles, and attributes removed before output
+- The listing endpoint returns the same `pageProps` structure as the previously used `_next/data` route but is `buildId`-free, removing an entire class of intermittent bootstrap failures.
+- Pagination is cursor-based through `pageCursors`; each page returns up to 25 listings.
+- The detail endpoint is the only source of `jobDescriptionHtml` and structured salary/qualifications, since `pageProps.viewJobData` is empty on search result pages.
+- `salaryInfo` on the listing is a formatted string (for example `$94,500–$118,000 a year`); the detail endpoint additionally returns a structured `baseSalary` with `minMinor`/`maxMinor` in minor currency units.
+- Dates (`dateOnIndeed`, `datePublished`) are Unix epoch milliseconds.
+
+## Request Pattern Notes
+- Cloudflare edge behavior depends on the client TLS/header profile. Verified profiles that consistently return data with impit: `chrome124`, `chrome151`, `firefox`, `okhttp`. The bare `chrome` alias and `chrome131`/`chrome136`/`chrome142` are intermittently or consistently challenged, so the Actor rotates across the verified pool and switches away from a profile when it is blocked.
+- The Actor fetches listing pages as the `__NEXT_DATA__` hydration payload and detail pages as JSON, and retries recoverable failures (edge challenge, `403`, `429`, `5xx`, network errors) with a bounded budget and profile rotation.
+- `description_html` is restricted to semantic content tags only, with layout tags, scripts, styles, and attributes removed before output.

@@ -40,7 +40,6 @@
         "30d"
       ],
       "default": "anytime",
-      "prefill": "anytime",
       "editor": "select"
     },
     "results_wanted": {
@@ -49,7 +48,6 @@
       "description": "Maximum number of jobs to collect",
       "minimum": 1,
       "default": 20,
-      "prefill": 20,
       "editor": "number"
     },
     "max_pages": {
@@ -58,7 +56,6 @@
       "description": "Safety limit on pages to crawl",
       "minimum": 1,
       "default": 10,
-      "prefill": 10,
       "editor": "number"
     },
     "proxyConfiguration": {

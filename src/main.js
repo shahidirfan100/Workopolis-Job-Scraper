@@ -3,28 +3,35 @@ import path from 'node:path';
 
 import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
-import { gotScraping } from 'got-scraping';
-import { CookieJar } from 'tough-cookie';
+import { Impit } from 'impit';
 
-const MAX_HTTP_RETRIES = 3;
+const MAX_HTTP_ATTEMPTS = 4;
 const DETAIL_CONCURRENCY = 6;
 const DATASET_BATCH_SIZE = 25;
+const PROFILE_COOLDOWN_MS = 5 * 60 * 1000;
 
-const cookieJar = new CookieJar();
+// Response shapes of the Workopolis Next.js payload used by this Actor. The
+// listing payload is served as an embedded hydration JSON document, while the
+// detail payload is served as plain JSON.
+const HTML_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+const JSON_ACCEPT = 'application/json, text/plain, */*';
 
-const HEADER_GEN_OPTIONS = {
-    browsers: [
-        { name: 'chrome', minVersion: 120, maxVersion: 132 },
-        { name: 'firefox', minVersion: 120, maxVersion: 132 },
-        { name: 'edge', minVersion: 120, maxVersion: 132 },
-        { name: 'safari', minVersion: 16, maxVersion: 18 },
-    ],
-    devices: ['desktop', 'mobile'],
-    locales: ['en-CA', 'en-US', 'en-GB'],
-};
+const SEARCH_BASE_URL = 'https://www.workopolis.com/search';
+const JOB_DETAIL_URL = 'https://www.workopolis.com/api/next/job';
 
-let sessionCounter = 0;
-const sessionToken = { unique: ++sessionCounter };
+// Browser/TLS impersonation profiles verified against Workopolis. The bare
+// `chrome` alias and the newest `chrome13x` profiles are intermittently
+// challenged by the edge, so requests rotate across a pool of profiles that
+// consistently return data and switch away from any profile that gets blocked.
+const BROWSER_PROFILES = ['chrome124', 'chrome151', 'firefox', 'okhttp'];
+
+class RecoverableRequestError extends Error {
+    constructor(message, retryAfterMs = null) {
+        super(message);
+        this.name = 'RecoverableRequestError';
+        this.retryAfterMs = retryAfterMs;
+    }
+}
 
 const wait = (ms) => new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -40,29 +47,26 @@ const realisticDelay = () => {
 
 const toTrimmedString = (value) => (typeof value === 'string' ? value.trim() : '');
 
-const parseJsonBody = (body, url) => {
-    if (typeof body === 'object' && body !== null) return body;
-    if (typeof body !== 'string') {
-        throw new Error(`Unexpected response type from ${url}: ${typeof body}`);
-    }
+const isChallengeHtml = (value) => /Just a moment|cf-browser-verification|cf-chl|Attention Required|Enable JavaScript and cookies/i.test(String(value ?? ''));
 
-    const trimmed = body.trim();
-    if (!trimmed) throw new Error(`Empty response body from ${url}`);
+const parseRetryAfter = (value) => {
+    if (!value) return null;
 
-    if (
-        trimmed.startsWith('<!DOCTYPE')
-        || trimmed.startsWith('<html')
-        || trimmed.includes('<title>Just a moment...')
-        || trimmed.includes('cf-browser-verification')
-    ) {
-        throw new Error(`Blocked with HTML challenge instead of JSON from ${url}`);
-    }
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.min(Math.max(seconds, 0) * 1000, 15000);
 
-    try {
-        return JSON.parse(trimmed);
-    } catch (error) {
-        throw new Error(`Invalid JSON from ${url}: ${error.message}. Preview: ${trimmed.slice(0, 160)}`);
-    }
+    const timestamp = new Date(value).getTime();
+    if (Number.isFinite(timestamp)) return Math.min(Math.max(timestamp - Date.now(), 0), 15000);
+
+    return null;
+};
+
+const isNetworkError = (error) => /connect|timed?\s?out|ECONN|socket|network|reset|fetch failed|closed/i.test(String(error?.message ?? ''));
+
+const backoffDelay = async (attempt, retryAfterMs) => {
+    const base = retryAfterMs ?? Math.min(1000 * 2 ** attempt, 8000);
+    const jitter = Math.floor(Math.random() * 500);
+    await wait(Math.min(base, 15000) + jitter);
 };
 
 const cleanValue = (value) => {
@@ -78,23 +82,54 @@ const cleanValue = (value) => {
     return value;
 };
 
-const formatSalary = (salaryInfo) => {
-    if (!salaryInfo || typeof salaryInfo !== 'object') return null;
+const firstNonEmpty = (...values) => {
+    for (const value of values) {
+        if (value === null || value === undefined) continue;
+        if (typeof value === 'string' && !value.trim()) continue;
+        if (Array.isArray(value) && value.length === 0) continue;
+        return value;
+    }
+    return null;
+};
 
-    const min = Number.isFinite(Number(salaryInfo.min)) ? Number(salaryInfo.min) : null;
-    const max = Number.isFinite(Number(salaryInfo.max)) ? Number(salaryInfo.max) : null;
-    const intervalMap = {
-        HOURLY: '/hour',
-        YEARLY: '/year',
-        MONTHLY: '/month',
-        WEEKLY: '/week',
-        DAILY: '/day',
-    };
-    const interval = intervalMap[salaryInfo.type] ?? '';
+const SALARY_INTERVALS = {
+    HOURLY: '/hour',
+    YEARLY: '/year',
+    MONTHLY: '/month',
+    WEEKLY: '/week',
+    DAILY: '/day',
+};
 
+const joinSalaryRange = (min, max, interval) => {
     if (min && max) return `$${min.toLocaleString()} - $${max.toLocaleString()}${interval}`;
     if (min) return `From $${min.toLocaleString()}${interval}`;
     if (max) return `Up to $${max.toLocaleString()}${interval}`;
+    return null;
+};
+
+const formatStructuredSalary = (salary) => {
+    if (!salary || typeof salary !== 'object') return null;
+
+    // Current payload uses minor currency units, e.g. { minMinor, maxMinor, unitOfWork }.
+    const minMinor = Number(salary.minMinor);
+    const maxMinor = Number(salary.maxMinor);
+    if (Number.isFinite(minMinor) || Number.isFinite(maxMinor)) {
+        const min = Number.isFinite(minMinor) ? minMinor / 100 : null;
+        const max = Number.isFinite(maxMinor) ? maxMinor / 100 : null;
+        return joinSalaryRange(min, max, SALARY_INTERVALS[salary.unitOfWork] ?? '');
+    }
+
+    // Older payload variant, e.g. { min, max, type }.
+    const min = Number(salary.min);
+    const max = Number(salary.max);
+    if (Number.isFinite(min) || Number.isFinite(max)) {
+        return joinSalaryRange(
+            Number.isFinite(min) ? min : null,
+            Number.isFinite(max) ? max : null,
+            SALARY_INTERVALS[salary.type] ?? '',
+        );
+    }
+
     return null;
 };
 
@@ -178,24 +213,24 @@ const escapeHtml = (text) => text
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const buildSearchUrl = ({ keyword, location, postedDate }) => {
-    const url = new URL('https://www.workopolis.com/search');
+const buildSearchUrl = ({ keyword, location, postedDate, cursor }) => {
+    const url = new URL(SEARCH_BASE_URL);
     if (keyword) url.searchParams.set('q', keyword);
     if (location) url.searchParams.set('l', location);
-    if (postedDate && postedDate !== 'anytime') url.searchParams.set('posted', postedDate);
-    return url.href;
-};
-
-const buildNextDataUrl = ({ buildId, keyword, location, cursor }) => {
-    const url = new URL(`https://www.workopolis.com/_next/data/${buildId}/search.json`);
-    if (keyword) url.searchParams.set('q', keyword);
-    if (location) url.searchParams.set('l', location);
+    if (postedDate && postedDate !== 'anytime') url.searchParams.set('t', postedDate);
     if (cursor) url.searchParams.set('cursor', cursor);
     return url.href;
 };
 
+const addCursorToUrl = (baseUrl, cursor) => {
+    const url = new URL(baseUrl);
+    if (cursor) url.searchParams.set('cursor', cursor);
+    else url.searchParams.delete('cursor');
+    return url.href;
+};
+
 const buildJobDetailUrl = ({ jobKey, locale, continueUrl, jobCardTrackingKey }) => {
-    const url = new URL('https://www.workopolis.com/api/next/job');
+    const url = new URL(JOB_DETAIL_URL);
     url.searchParams.set('key', jobKey);
     url.searchParams.set('locale', locale);
     url.searchParams.set('indeedApplyContinueUrl', continueUrl);
@@ -219,11 +254,12 @@ const parseStartConfig = ({ startUrls, keyword, location, postedDate }) => {
 
     try {
         const parsed = new URL(firstUrl);
+        const urlPostedDate = parsed.searchParams.get('t');
         return {
             keyword: parsed.searchParams.get('q') || keyword,
             location: parsed.searchParams.get('l') || location,
             locale: parsed.pathname.startsWith('/fr-CA') ? 'fr-CA' : 'en-CA',
-            postedDate,
+            postedDate: ['anytime', '24h', '7d', '30d'].includes(urlPostedDate) ? urlPostedDate : postedDate,
             startSearchUrl: parsed.href,
         };
     } catch {
@@ -231,15 +267,13 @@ const parseStartConfig = ({ startUrls, keyword, location, postedDate }) => {
     }
 };
 
-const normalizeJobsPayload = (payload) => {
-    const pageProps = payload?.pageProps || payload?.data || payload || {};
+const normalizeJobsPayload = (pageProps) => {
     const jobs = Array.isArray(pageProps.jobs) ? pageProps.jobs : [];
     const pageCursors = pageProps.pageCursors && typeof pageProps.pageCursors === 'object' ? pageProps.pageCursors : {};
     const currentPageNumber = Number(pageProps.currentPageNumber) || 1;
     const nextCursor = (
         cleanValue(pageProps.nextCursor)
         || cleanValue(pageCursors[String(currentPageNumber + 1)])
-        || cleanValue(pageProps.nextPageUrl ? new URL(pageProps.nextPageUrl, 'https://www.workopolis.com').searchParams.get('cursor') : null)
         || null
     );
 
@@ -249,15 +283,17 @@ const normalizeJobsPayload = (payload) => {
         pageCursors,
         currentPageNumber,
         nextCursor,
+        resultCount: Number(pageProps.resultCount) || null,
     };
 };
 
-const parseCompany = (job, detail) => cleanValue(
-    (typeof job.company === 'string' ? job.company : job.company?.name || job.company?.displayName)
-    || job.companyName
-    || job.employer
-    || detail?.employerName,
-);
+const parseCompany = (job, detail) => cleanValue(firstNonEmpty(
+    typeof job.company === 'string' ? job.company : job.company?.name || job.company?.displayName,
+    job.companyName,
+    job.employer,
+    detail?.employerName,
+    detail?.company,
+));
 
 const parseLocation = (job, detail) => {
     const jobLocation = typeof job.location === 'string'
@@ -265,19 +301,12 @@ const parseLocation = (job, detail) => {
         : job.location?.displayName
             || [job.location?.city, job.location?.province].filter(Boolean).join(', ');
 
-    return cleanValue(jobLocation || job.formattedLocation || detail?.formattedLocation || detail?.location);
-};
-
-const parseEmploymentType = (job, detail) => {
-    const value = job.jobTypes
-        || job.employmentType
-        || job.jobType
-        || job.type
-        || detail?.jobTypes
-        || detail?.employmentType;
-
-    if (Array.isArray(value)) return cleanValue(value.join(', '));
-    return cleanValue(value);
+    return cleanValue(firstNonEmpty(
+        jobLocation,
+        job.formattedLocation,
+        detail?.formattedLocation,
+        detail?.location,
+    ));
 };
 
 const parseDelimitedList = (value) => {
@@ -287,7 +316,7 @@ const parseDelimitedList = (value) => {
     const parts = value
         .map((item) => {
             if (typeof item === 'string') return item.trim();
-            if (item && typeof item === 'object') return item.label || item.name || item.text || '';
+            if (item && typeof item === 'object') return item.label || item.name || item.text || item.displayValue || '';
             return '';
         })
         .filter(Boolean);
@@ -295,43 +324,64 @@ const parseDelimitedList = (value) => {
     return parts.length ? parts.join(', ') : null;
 };
 
+const parseEmploymentType = (job, detail) => parseDelimitedList(firstNonEmpty(
+    job.jobTypes,
+    job.employmentType,
+    job.jobType,
+    job.type,
+    detail?.jobTypes,
+    detail?.employmentType,
+));
+
+const parseWorkSettings = (job, detail) => cleanValue(firstNonEmpty(
+    parseDelimitedList(job.remoteAttributes),
+    job.remoteAttributes?.displayValue,
+    job.remoteAttributes?.isRemote ? 'Remote' : null,
+    parseDelimitedList(detail?.workSettings),
+));
+
+const parseSalary = (job, detail) => cleanValue(firstNonEmpty(
+    typeof job.salaryInfo === 'string' ? job.salaryInfo : null,
+    formatStructuredSalary(job.salaryInfo),
+    job.salary,
+    job.salaryText,
+    job.compensation,
+    formatStructuredSalary(detail?.baseSalary),
+    detail?.salary,
+    detail?.salaryText,
+    detail?.compensation,
+));
+
 const buildRecord = (job, detail, context) => {
-    const rawDescription = cleanValue(
-        detail?.jobDescriptionHtml
-        || detail?.description
-        || context.viewJobData?.jobDescriptionHtml
-        || context.viewJobData?.description,
-    );
-    const fallbackSnippet = cleanValue(job.snippet || detail?.snippet);
+    const rawDescription = cleanValue(firstNonEmpty(
+        detail?.jobDescriptionHtml,
+        detail?.description,
+        context.viewJobData?.jobDescriptionHtml,
+        context.viewJobData?.description,
+    ));
+    const fallbackSnippet = cleanValue(firstNonEmpty(job.snippet, detail?.snippet));
     const descriptionHtml = sanitizeHtml(rawDescription) || (fallbackSnippet ? `<p>${escapeHtml(fallbackSnippet)}</p>` : null);
     const descriptionText = htmlToText(rawDescription) || fallbackSnippet;
-
-    const salary = cleanValue(
-        formatSalary(job.salaryInfo)
-        || job.salary
-        || job.salaryText
-        || job.compensation
-        || detail?.salary
-        || detail?.salaryText,
-    );
 
     const record = {
         url: cleanValue(`https://www.workopolis.com/jobsearch/viewjob/${job.jobKey}`),
         jobKey: cleanValue(job.jobKey),
-        title: cleanValue(job.title || job.jobTitle || detail?.title || detail?.jobTitle),
+        title: cleanValue(firstNonEmpty(job.title, job.jobTitle, detail?.title, detail?.jobTitle, detail?.displayTitle)),
         company: parseCompany(job, detail),
         location: parseLocation(job, detail),
-        salary,
+        salary: parseSalary(job, detail),
         employmentType: parseEmploymentType(job, detail),
-        workSettings: cleanValue(
-            job.remoteAttributes?.displayValue
-            || (job.remoteAttributes?.isRemote ? 'Remote' : null)
-            || parseDelimitedList(detail?.workSettings),
-        ),
-        datePosted: normalizeDatePosted(job.dateOnIndeed || job.datePublished || job.datePosted || detail?.dateOnIndeed || detail?.datePublished),
-        benefits: parseDelimitedList(job.benefits || detail?.benefits),
-        snippet: cleanValue(job.snippet || detail?.snippet),
-        requirements: parseDelimitedList(job.requirements || detail?.requirements || detail?.skills),
+        workSettings: parseWorkSettings(job, detail),
+        datePosted: normalizeDatePosted(firstNonEmpty(
+            job.dateOnIndeed,
+            job.datePublished,
+            job.datePosted,
+            detail?.dateOnIndeed,
+            detail?.datePublished,
+        )),
+        benefits: parseDelimitedList(firstNonEmpty(job.benefits, detail?.benefits)),
+        snippet: fallbackSnippet,
+        requirements: parseDelimitedList(firstNonEmpty(job.requirements, detail?.qualifications, detail?.requirements, detail?.skills)),
         description_html: descriptionHtml,
         description_text: descriptionText,
         _source: 'workopolis.com',
@@ -352,6 +402,32 @@ const runWithConcurrency = async (items, limit, worker) => {
     await Promise.all(runners);
 };
 
+const parseJsonText = (text, url) => {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) throw new Error(`Empty response body from ${url}`);
+    if (isChallengeHtml(trimmed)) throw new Error(`Blocked with HTML challenge instead of JSON from ${url}`);
+
+    try {
+        return JSON.parse(trimmed);
+    } catch (error) {
+        throw new Error(`Invalid JSON from ${url}: ${error.message}. Preview: ${trimmed.slice(0, 160)}`);
+    }
+};
+
+const parseNextData = (html, url) => {
+    const match = String(html ?? '').match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+    if (!match) {
+        if (isChallengeHtml(html)) throw new Error(`Blocked with HTML challenge from ${url}`);
+        throw new Error(`Missing page data payload from ${url}`);
+    }
+
+    try {
+        return JSON.parse(match[1]);
+    } catch (error) {
+        throw new Error(`Invalid page data payload from ${url}: ${error.message}`);
+    }
+};
+
 Actor.main(async () => {
     process.on('unhandledRejection', (reason) => log.error('Unhandled rejection', { reason: String(reason) }));
     process.on('uncaughtException', (error) => log.error('Uncaught exception', { message: error.message, stack: error.stack }));
@@ -360,12 +436,7 @@ Actor.main(async () => {
     if (typeof input !== 'object' || input === null || Array.isArray(input)) input = {};
 
     const isLocalRun = process.env.APIFY_IS_AT_HOME !== '1';
-    const shouldLoadLocalInput = isLocalRun && (
-        !Object.keys(input).length
-        || Object.prototype.hasOwnProperty.call(input, 'buildId')
-    );
-
-    if (shouldLoadLocalInput) {
+    if (isLocalRun && !Object.keys(input).length) {
         try {
             const raw = await readFile(path.join(process.cwd(), 'INPUT.json'), 'utf8');
             const parsed = JSON.parse(raw);
@@ -406,7 +477,9 @@ Actor.main(async () => {
         } catch (error) {
             log.warning(`Custom proxy configuration failed: ${error.message}`);
         }
-    } else if (!isLocalRun) {
+    }
+
+    if (!proxyUrl && !isLocalRun) {
         try {
             const proxyConfiguration = await Actor.createProxyConfiguration({
                 useApifyProxy: true,
@@ -418,64 +491,100 @@ Actor.main(async () => {
         }
     }
 
-    const requestWithHeaders = async (url, { isHtml = false } = {}) => {
-        for (let attempt = 1; attempt <= MAX_HTTP_RETRIES; attempt++) {
+    // One client per profile is cached and reused so connections are pooled
+    // instead of rebuilt for every request.
+    const clientCache = new Map();
+    let preferredProfileIndex = 0;
+    const profileCooldownUntil = new Array(BROWSER_PROFILES.length).fill(0);
+
+    const getClient = (browser) => {
+        let client = clientCache.get(browser);
+        if (!client) {
+            client = new Impit({
+                browser,
+                timeout: 30000,
+                ...(proxyUrl ? { proxyUrl } : {}),
+            });
+            clientCache.set(browser, client);
+        }
+        return client;
+    };
+
+    // Skip profiles that recently failed so parallel and follow-up requests do
+    // not each rediscover the same block.
+    const selectProfileIndex = () => {
+        const { length } = BROWSER_PROFILES;
+        const now = Date.now();
+        for (let step = 0; step < length; step++) {
+            const index = (preferredProfileIndex + step) % length;
+            if (profileCooldownUntil[index] <= now) return index;
+        }
+        return preferredProfileIndex % length;
+    };
+
+    const requestRaw = async (url, { accept }) => {
+        let lastError;
+
+        for (let attempt = 0; attempt < MAX_HTTP_ATTEMPTS; attempt++) {
+            const profileIndex = selectProfileIndex();
+            const browser = BROWSER_PROFILES[profileIndex];
+
             try {
                 await realisticDelay();
-                const response = await gotScraping({
-                    url,
-                    timeout: { request: 30000 },
-                    retry: { limit: 0 },
-                    useHeaderGenerator: true,
-                    headerGeneratorOptions: HEADER_GEN_OPTIONS,
-                    sessionToken,
-                    cookieJar,
-                    headers: {
-                        Accept: isHtml
-                            ? 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                            : 'application/json, text/plain, */*',
-                    },
-                    https: { rejectUnauthorized: true },
-                    ...(proxyUrl ? { proxyUrl } : {}),
-                });
-                const body = String(response.body || '');
-                if (isHtml) {
-                    if (
-                        body.includes('<title>Just a moment...')
-                        || body.includes('cf-browser-verification')
-                    ) {
-                        throw new Error(`Blocked with HTML challenge from ${url}`);
-                    }
-                    return body;
-                }
-                return parseJsonBody(response.body, url);
-            } catch (error) {
-                const message = error.message || String(error);
-                const blocked = /Blocked with HTML challenge|403|429|captcha|just a moment/i.test(message);
-                log.warning(`Request failed (${attempt}/${MAX_HTTP_RETRIES}): ${message.slice(0, 80)}`);
+                const client = getClient(browser);
+                const response = await client.fetch(url, { headers: { accept } });
+                const text = String(await response.text());
+                const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
 
-                if (blocked && attempt === MAX_HTTP_RETRIES) throw error;
-                if (attempt < MAX_HTTP_RETRIES) await wait(1000 * attempt);
+                if (isChallengeHtml(text)) {
+                    throw new RecoverableRequestError(`Edge challenge (HTTP ${response.status})`, retryAfterMs);
+                }
+                if (response.status === 429) {
+                    throw new RecoverableRequestError('HTTP 429 rate limited', retryAfterMs);
+                }
+                if (response.status === 403) {
+                    throw new RecoverableRequestError('HTTP 403 forbidden', retryAfterMs);
+                }
+                if (response.status >= 500) {
+                    throw new RecoverableRequestError(`HTTP ${response.status} server error`, retryAfterMs);
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status} from ${url}: ${text.slice(0, 160)}`);
+                }
+
+                // Lock in the profile that worked so later requests start from it.
+                preferredProfileIndex = profileIndex;
+                return { text, status: response.status };
+            } catch (error) {
+                lastError = error;
+                const recoverable = error instanceof RecoverableRequestError || isNetworkError(error);
+                log.warning(`Request attempt ${attempt + 1}/${MAX_HTTP_ATTEMPTS} failed [${browser}]: ${String(error.message).slice(0, 120)}`);
+                if (!recoverable) throw error;
+
+                // Cool down the failed profile and move past it for the next attempt.
+                profileCooldownUntil[profileIndex] = Date.now() + PROFILE_COOLDOWN_MS;
+                preferredProfileIndex = (profileIndex + 1) % BROWSER_PROFILES.length;
+
+                if (attempt < MAX_HTTP_ATTEMPTS - 1) await backoffDelay(attempt, error.retryAfterMs);
             }
         }
 
-        throw new Error(`Failed to fetch ${url}`);
+        throw lastError;
     };
 
-    const requestJson = (url) => requestWithHeaders(url, { isHtml: false });
-    const requestTextHtml = (url) => requestWithHeaders(url, { isHtml: true });
+    const requestJson = async (url) => {
+        const { text } = await requestRaw(url, { accept: JSON_ACCEPT });
+        return parseJsonText(text, url);
+    };
 
-    const discoverBuildId = async () => {
-        const html = await requestTextHtml(searchConfig.startSearchUrl);
-        const buildId = html.match(/"buildId"\s*:\s*"([^"]+)"/)?.[1]
-            || html.match(/_next\/static\/([^/]+)\/_buildManifest\.js/)?.[1]
-            || null;
-
-        if (!buildId) {
-            throw new Error('Could not discover Workopolis buildId for paginated listing API.');
+    const requestSearchPage = async (url) => {
+        const { text } = await requestRaw(url, { accept: HTML_ACCEPT });
+        const data = parseNextData(text, url);
+        const pageProps = data?.props?.pageProps;
+        if (!pageProps || typeof pageProps !== 'object') {
+            throw new Error(`Missing page payload from ${url}`);
         }
-
-        return buildId;
+        return pageProps;
     };
 
     const seenJobKeys = new Set();
@@ -488,6 +597,7 @@ Actor.main(async () => {
     let missingDescriptions = 0;
     let missingCompany = 0;
     let missingLocation = 0;
+    let pagesProcessed = 0;
 
     const isValidRecord = (record) => Boolean(record?.jobKey && record?.title && record?.url);
 
@@ -526,21 +636,26 @@ Actor.main(async () => {
         return saveChain;
     };
 
-    const buildId = await discoverBuildId();
-
     let cursor = null;
     let currentPage = 1;
+    let stopReason = 'completed';
 
     while (savedCount < resultsWanted && currentPage <= maxPages) {
-        const pageUrl = buildNextDataUrl({
-            buildId,
-            keyword: searchConfig.keyword,
-            location: searchConfig.location,
-            cursor,
-        });
+        const pageUrl = addCursorToUrl(searchConfig.startSearchUrl, cursor);
 
-        const payload = normalizeJobsPayload(await requestJson(pageUrl));
+        let payload;
+        try {
+            payload = normalizeJobsPayload(await requestSearchPage(pageUrl));
+        } catch (error) {
+            stopReason = `listing request failed on page ${currentPage}`;
+            log.warning(`Page ${currentPage} listing fetch failed: ${error.message.slice(0, 160)}`);
+            break;
+        }
+
+        pagesProcessed++;
+
         if (!payload.jobs.length) {
+            stopReason = `no more listings on page ${currentPage}`;
             log.info(`Page ${currentPage}: empty`);
             break;
         }
@@ -551,7 +666,10 @@ Actor.main(async () => {
 
         for (const job of jobsToTake) seenJobKeys.add(job.jobKey);
 
-        if (!jobsToTake.length) break;
+        if (!jobsToTake.length) {
+            stopReason = 'no new listings found';
+            break;
+        }
 
         log.info(`Page ${currentPage}: ${jobsToTake.length} jobs`);
 
@@ -570,7 +688,7 @@ Actor.main(async () => {
                 try {
                     detail = await requestJson(detailUrl);
                 } catch (error) {
-                    log.warning(`Detail fetch failed: ${error.message.slice(0, 80)}`);
+                    log.warning(`Detail fetch failed: ${error.message.slice(0, 120)}`);
                 }
             }
 
@@ -581,10 +699,16 @@ Actor.main(async () => {
         await saveChain;
         await flushBatch(true);
 
-        if (savedCount >= resultsWanted) break;
+        if (savedCount >= resultsWanted) {
+            stopReason = 'requested result count reached';
+            break;
+        }
 
         cursor = payload.nextCursor;
-        if (!cursor) break;
+        if (!cursor) {
+            stopReason = 'no next page cursor';
+            break;
+        }
         currentPage++;
     }
 
@@ -598,7 +722,7 @@ Actor.main(async () => {
         log.warning(`Records still missing description_text: ${missingDescriptions}/${savedCount}`);
     }
     if (missingCompany > 0 || missingLocation > 0) {
-        log.warning(`Records with partial source data remain`, {
+        log.warning('Records with partial source data remain', {
             missingCompany,
             missingLocation,
         });
@@ -610,6 +734,8 @@ Actor.main(async () => {
 
     log.info('Run complete', {
         saved: savedCount,
+        pages: pagesProcessed,
+        stopReason,
         missingDescriptions,
         missingCompany,
         missingLocation,
